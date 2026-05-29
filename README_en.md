@@ -7,6 +7,7 @@
 After startup, open `http://127.0.0.1:8848/`.
 
 Notes:
+- The packaged no-Python build can be copied to an intranet target machine and run directly after extraction with `run.bat` (Windows) or `run.sh` (Linux/macOS).
 - If `sqlftpvc.exe` (Windows) or `sqlftpvc` (Linux/macOS) exists in the current directory, the `run.*` script starts that executable first, so the target machine does not need Python.
 - On first launch, the tool creates `.venv` and installs dependencies from `api/requirements.txt`.
 - If the intranet machine cannot access the internet, put wheel files into `api/wheels/`. The scripts automatically switch to `--no-index --find-links` offline installation.
@@ -20,10 +21,20 @@ Notes:
 6. Click `Upload` to preview differences, then confirm and apply.
 
 ## Development Mode
+### Environment Setup
+1. Install frontend dependencies: `npm install`
+2. Runtime environment `.venv` (for local startup / portable package):
+   - Windows PowerShell: `python -m venv .venv; .\.venv\Scripts\python -m pip install --upgrade pip; .\.venv\Scripts\python -m pip install -r api\requirements.txt`
+   - Linux/macOS: `python3 -m venv .venv && ./.venv/bin/python -m pip install --upgrade pip && ./.venv/bin/python -m pip install -r api/requirements.txt`
+3. Build environment `.venv-build` (for no-Python package / PyInstaller packaging):
+   - Windows PowerShell: `python -m venv .venv-build; .\.venv-build\Scripts\python -m pip install --upgrade pip; .\.venv-build\Scripts\python -m pip install -r api\requirements.txt; .\.venv-build\Scripts\python -m pip install pyinstaller`
+   - Linux/macOS: `python3 -m venv .venv-build && ./.venv-build/bin/python -m pip install --upgrade pip && ./.venv-build/bin/python -m pip install -r api/requirements.txt && ./.venv-build/bin/python -m pip install pyinstaller`
+
+### Local Startup
 1. Frontend: `npm run dev`
 2. Backend:
-   - Create a virtual environment and install dependencies: `python -m venv .venv && .\.venv\Scripts\python -m pip install -r api\requirements.txt`
-   - Start: `set PYTHONPATH=%cd%\api && .\.venv\Scripts\python -m sqlftpvc`
+   - Windows PowerShell: `$env:PYTHONPATH="$pwd\api"; .\.venv\Scripts\python -m sqlftpvc`
+   - Linux/macOS: `PYTHONPATH="$(pwd)/api" ./.venv/bin/python -m sqlftpvc`
 
 The frontend already proxies `/api` to `http://127.0.0.1:8848` in `vite.config.ts`.
 
@@ -37,6 +48,7 @@ The frontend already proxies `/api` to `http://127.0.0.1:8848` in `vite.config.t
 
 Notes:
 - The no-Python package must be built on a machine that has Python and Node installed.
+- The generated archive can be distributed to intranet target machines and run directly after extraction with `run.bat` or `run.sh`.
 - The generated package should run on a target machine with the same operating system and architecture.
 
 ### Portable Python Package
