@@ -3,6 +3,16 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 $stamp = Get-Date -Format "yyyyMMddHHmm"
+$version = $null
+try {
+  $pkg = Get-Content -Path ".\package.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+  $version = ($pkg.version | ForEach-Object { "$_" }).Trim()
+} catch {
+  $version = $null
+}
+if (-not $version) {
+  $version = "0.0.0"
+}
 
 if (-not (Test-Path "node_modules")) {
   npm install
@@ -35,22 +45,16 @@ if (-not (Test-Path $exe)) {
   throw "Build failed: exe not found ($exe)"
 }
 
-$outDir = Join-Path (Get-Location) ("release\File-Lite-VC-no-python-" + $stamp)
+$outDir = Join-Path (Get-Location) ("release\File-Lite-VC-no-python_" + $version)
+if (Test-Path $outDir) {
+  Remove-Item -Recurse -Force $outDir
+}
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 Copy-Item -Force $exe (Join-Path $outDir "File-Lite-VC.exe")
 Copy-Item -Force .\run.bat, .\run.ps1 (Join-Path $outDir ".")
 Copy-Item -Force .\README.md (Join-Path $outDir "README.md")
+if (Test-Path .\操作手册_sqlftpvc.md) { Copy-Item -Force .\操作手册_sqlftpvc.md (Join-Path $outDir "操作手册_sqlftpvc.md") }
+if (Test-Path .\操作手册_sqlftpvc_en.md) { Copy-Item -Force .\操作手册_sqlftpvc_en.md (Join-Path $outDir "操作手册_sqlftpvc_en.md") }
 
-$zipPath = Join-Path (Get-Location) ("release\File-Lite-VC-no-python-" + $stamp + ".zip")
-$latestZipPath = Join-Path (Get-Location) "release\File-Lite-VC-no-python.zip"
-if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
-if (Test-Path $latestZipPath) { Remove-Item -Force $latestZipPath }
-
-Compress-Archive -Path $outDir\* -DestinationPath $zipPath
-Copy-Item -Force $zipPath $latestZipPath
-
-try { Remove-Item -Recurse -Force $outDir } catch { }
-
-Write-Host "Release created: $zipPath"
-Write-Host "Latest copy: $latestZipPath"
+Write-Host "Release folder created: $outDir"

@@ -17,9 +17,9 @@ Note:
 ## 1. Quick Start (Target Machine)
 
 ### 1.1 No-Python Package (Recommended)
-Use `release/File-Lite-VC-no-python.zip`:
+Use the output folder `release/File-Lite-VC-no-python_<version>/` (the version is read from `package.json` → `version`):
 1. Copy it to the target intranet machine
-2. Extract to any directory (avoid protected directories like `C:\Program Files`)
+2. Copy the folder to any directory (avoid protected directories like `C:\Program Files`)
 3. Windows: run `run.bat` or double-click `File-Lite-VC.exe`
 4. Open `http://127.0.0.1:8848/`
 
@@ -84,7 +84,7 @@ npm run dev
 ## 3. Packaging
 
 Script included in this repo:
-- `package_release_no_python.ps1` → `release/File-Lite-VC-no-python.zip`
+- `package_release_no_python.ps1` → `release/File-Lite-VC-no-python_<version>/`
 
 Run at repo root:
 ```powershell

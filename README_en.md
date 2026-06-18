@@ -13,9 +13,9 @@ Web UI: `http://127.0.0.1:8848/`
 ## 1. One-Click Run (Recommended for Intranet Users)
 
 ### 1.1 Packaged Build (No Python Required on Target)
-Use `release/File-Lite-VC-no-python.zip`:
+Use the output folder `release/File-Lite-VC-no-python_<version>/` (the version is read from `package.json` → `version`):
 1. Copy to the target intranet machine
-2. Extract to any directory (avoid protected directories like `C:\Program Files`)
+2. Copy the folder to any directory (avoid protected directories like `C:\Program Files`)
 3. Windows: run `run.bat` or double-click `File-Lite-VC.exe`
 4. Open `http://127.0.0.1:8848/` in the browser
 
@@ -92,7 +92,7 @@ python -m venv .venv-build
 
 ### 3.2 Artifact Types
 Packaging script included in this repo:
-- No-Python package (recommended): `powershell -ExecutionPolicy Bypass -File package_release_no_python.ps1` → `release/File-Lite-VC-no-python.zip`
+- No-Python package (recommended): `powershell -ExecutionPolicy Bypass -File package_release_no_python.ps1` → `release/File-Lite-VC-no-python_<version>/`
 
 ---
 

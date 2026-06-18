@@ -16,9 +16,9 @@
 ## 1. 一键运行（推荐给内网使用）
 
 ### 1.1 已打包产物（目标机无需 Python）
-使用 `release/File-Lite-VC-no-python.zip`：
+使用构建输出目录 `release/File-Lite-VC-no-python_<版本号>/`（版本号来自 `package.json` 的 `version` 字段）：
 1. 将压缩包拷贝到目标内网机
-2. 解压到任意目录（建议不要放在 `C:\Program Files`）
+2. 直接拷贝该目录到目标内网机任意位置（建议不要放在 `C:\Program Files`）
 3. Windows 运行 `run.bat` 或直接双击 `File-Lite-VC.exe`
 4. 浏览器打开 `http://127.0.0.1:8848/`
 
@@ -98,7 +98,7 @@ python -m venv .venv-build
 
 ### 3.2 产物类型
 当前仓库内置打包脚本：
-- 无 Python 环境包（推荐分发到内网目标机）：`powershell -ExecutionPolicy Bypass -File package_release_no_python.ps1` → `release/File-Lite-VC-no-python.zip`
+- 无 Python 环境包（推荐分发到内网目标机）：`powershell -ExecutionPolicy Bypass -File package_release_no_python.ps1` → `release/File-Lite-VC-no-python_<版本号>/`
 
 ---
 
