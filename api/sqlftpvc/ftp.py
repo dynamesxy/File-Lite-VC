@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import posixpath
+from pathlib import Path
 from urllib.parse import unquote
 from dataclasses import dataclass
 from ftplib import FTP, error_perm
@@ -157,16 +158,31 @@ def ensure_remote_dirs(ftp: FTP, remote_dir: str) -> None:
     log_info(f"ftp.ensure_dirs.ok target={target}")
 
 
-def list_sql_files(ftp: FTP, remote_dir: str) -> list[str]:
+def _normalize_extensions(extensions: list[str] | None) -> set[str]:
+    if not extensions:
+        return {".sql"}
+    out: set[str] = set()
+    for e in extensions:
+        s = (e or "").strip().lower()
+        if not s:
+            continue
+        if not s.startswith("."):
+            s = "." + s
+        out.add(s)
+    return out or {".sql"}
+
+
+def list_sql_files(ftp: FTP, remote_dir: str, extensions: list[str] | None = None) -> list[str]:
     base = _normalize_remote_dir(remote_dir)
-    log_info(f"ftp.list_sql.start base={base}")
+    exts = _normalize_extensions(extensions)
+    log_info(f"ftp.list_sql.start base={base} exts={sorted(exts)}")
     try:
-        out = _with_encoding_fallback(ftp, "ftp.list_sql.mlsd", lambda: _list_sql_files_mlsd(ftp, base))
+        out = _with_encoding_fallback(ftp, "ftp.list_sql.mlsd", lambda: _list_sql_files_mlsd(ftp, base, exts))
         log_info(f"ftp.list_sql.ok mode=mlsd base={base} count={len(out)}")
         return out
     except Exception as e:
         log_error(f"ftp.list_sql.mlsd.error base={base} error={e}")
-        out = _with_encoding_fallback(ftp, "ftp.list_sql.nlst", lambda: _list_sql_files_nlst(ftp, base))
+        out = _with_encoding_fallback(ftp, "ftp.list_sql.nlst", lambda: _list_sql_files_nlst(ftp, base, exts))
         log_info(f"ftp.list_sql.ok mode=nlst base={base} count={len(out)}")
         return out
 
@@ -185,7 +201,7 @@ def list_dirs(ftp: FTP, remote_dir: str) -> list[DirEntry]:
         return out
 
 
-def _list_sql_files_mlsd(ftp: FTP, base: str) -> list[str]:
+def _list_sql_files_mlsd(ftp: FTP, base: str, exts: set[str]) -> list[str]:
     out: list[str] = []
 
     def walk(cur: str, prefix: str) -> None:
@@ -198,7 +214,7 @@ def _list_sql_files_mlsd(ftp: FTP, base: str) -> list[str]:
             if typ == "dir":
                 walk(remote_join(cur, name), rel)
             else:
-                if name.lower().endswith(".sql"):
+                if Path(name).suffix.lower() in exts:
                     out.append(rel)
 
     walk(base, "")
@@ -206,7 +222,7 @@ def _list_sql_files_mlsd(ftp: FTP, base: str) -> list[str]:
     return out
 
 
-def _list_sql_files_nlst(ftp: FTP, base: str) -> list[str]:
+def _list_sql_files_nlst(ftp: FTP, base: str, exts: set[str]) -> list[str]:
     out: list[str] = []
 
     def walk(cur: str, prefix: str) -> None:
@@ -230,7 +246,7 @@ def _list_sql_files_nlst(ftp: FTP, base: str) -> list[str]:
             except Exception:
                 pass
 
-            if name2.lower().endswith(".sql"):
+            if Path(name2).suffix.lower() in exts:
                 out.append(rel)
 
     walk(base, "")

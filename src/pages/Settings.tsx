@@ -1,32 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { LogOut } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
-import { FtpDirPickerModal } from "@/components/settings/FtpDirPickerModal";
+import { LanguageToggle } from "@/components/LanguageToggle";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { useI18n } from "@/i18n";
 import { useAppStore } from "@/store/appStore";
-import { api, type AuditLog, type FtpConfig } from "@/utils/api";
+import { useAuthStore } from "@/store/authStore";
+import { api, type AuditLog } from "@/utils/api";
 
 export default function SettingsPage() {
-  const { tx, isEn } = useI18n();
-  const { projects, activeProjectId, refreshProjects } = useAppStore();
-  const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
+  const { tx } = useI18n();
+  const nav = useNavigate();
+  const { activeProjectId } = useAppStore();
+  const { user, logout } = useAuthStore();
+  const [logoutBusy, setLogoutBusy] = useState(false);
 
-  const [cfg, setCfg] = useState<FtpConfig>({
-    host: "",
-    port: 21,
-    username: "",
-    password: "",
-    passiveMode: true,
-    remoteRoot: "/",
-    ftpEncoding: "auto",
-  });
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [testOk, setTestOk] = useState(false);
-  const [pickOpen, setPickOpen] = useState(false);
-  const bindLockRef = useRef(false);
   const [previewLogs, setPreviewLogs] = useState<AuditLog[]>([]);
   const [detailLogs, setDetailLogs] = useState<AuditLog[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -54,124 +46,52 @@ export default function SettingsPage() {
     return `${value}${endOfMinute ? ":59" : ":00"}Z`;
   }
 
-  async function loadLogs(params?: { detail?: boolean; page?: number }) {
-    const detail = params?.detail ?? false;
-    const page = params?.page ?? 1;
+  const loadPreviewLogs = useCallback(async () => {
     try {
       const result = await api.logs({
         projectId: activeProjectId ?? undefined,
-        actorUsername: detail ? logActor.trim() || undefined : undefined,
-        action: detail ? logAction || undefined : undefined,
-        result: detail ? logResult || undefined : undefined,
-        startAt: detail ? toApiDateTime(logStartAt, false) : undefined,
-        endAt: detail ? toApiDateTime(logEndAt, true) : undefined,
-        offset: detail ? (page - 1) * LOG_PAGE_SIZE : 0,
-        limit: detail ? LOG_PAGE_SIZE : LOG_PREVIEW_LIMIT,
+        offset: 0,
+        limit: LOG_PREVIEW_LIMIT,
       });
-      if (detail) {
+      setPreviewLogs(result.items);
+    } catch {
+      setPreviewLogs([]);
+    }
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    void loadPreviewLogs();
+  }, [loadPreviewLogs]);
+
+  const loadDetailLogs = useCallback(
+    async (page: number) => {
+      try {
+        const result = await api.logs({
+          projectId: activeProjectId ?? undefined,
+          actorUsername: logActor.trim() || undefined,
+          action: logAction || undefined,
+          result: logResult || undefined,
+          startAt: toApiDateTime(logStartAt, false),
+          endAt: toApiDateTime(logEndAt, true),
+          offset: (page - 1) * LOG_PAGE_SIZE,
+          limit: LOG_PAGE_SIZE,
+        });
         setDetailLogs(result.items);
         setLogTotal(result.total);
-      } else {
-        setPreviewLogs(result.items);
-      }
-    } catch {
-      if (detail) {
+      } catch {
         setDetailLogs([]);
         setLogTotal(0);
-      } else {
-        setPreviewLogs([]);
       }
-      if (detail) {
-        setLogTotal(0);
-      }
-    }
-  }
-
-  useEffect(() => {
-    async function loadCfg() {
-      setTestOk(false);
-      if (!activeProjectId) return;
-      try {
-        const r = await api.getFtp(activeProjectId);
-        setCfg(r);
-        setMsg(null);
-      } catch (e) {
-        setCfg({ host: "", port: 21, username: "", password: "", passiveMode: true, remoteRoot: "/", ftpEncoding: "auto" });
-        const m = e instanceof Error ? e.message : tx("加载 FTP 配置失败", "Failed to load FTP settings");
-        if (m.includes("ftp setting not configured")) setMsg(tx("该项目尚未保存 FTP 配置", "FTP settings have not been saved for this project"));
-      }
-    }
-    loadCfg();
-  }, [activeProjectId]);
-
-  useEffect(() => {
-    void loadLogs();
-  }, [activeProjectId]);
-
-  async function test() {
-    setBusy(true);
-    setMsg(null);
-    setTestOk(false);
-    try {
-      const r = await api.testFtp(cfg);
-      setMsg(r.ok ? `连接成功，PWD=${r.pwd ?? ""}` : "连接失败");
-      setTestOk(Boolean(r.ok));
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : tx("连接失败", "Connection failed"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function save() {
-    if (!activeProjectId) {
-      setMsg(tx("请先选择项目", "Please select a project first"));
-      return;
-    }
-    setBusy(true);
-    setMsg(null);
-    try {
-      await api.saveFtp(activeProjectId, cfg);
-      setMsg(tx("已保存", "Saved"));
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : tx("保存失败", "Save failed"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function pickAndBindProject(path: string, fullPath: string) {
-    if (bindLockRef.current) return;
-    bindLockRef.current = true;
-    if (!activeProjectId) {
-      setMsg(tx("请先选择项目", "Please select a project first"));
-      bindLockRef.current = false;
-      return;
-    }
-    setBusy(true);
-    setMsg(null);
-    try {
-      const nextCfg = { ...cfg, remoteRoot: fullPath };
-      setCfg(nextCfg);
-      await api.saveFtp(activeProjectId, nextCfg);
-      await api.updateProject(activeProjectId, { remotePath: fullPath });
-      await refreshProjects();
-      setMsg(isEn ? `Project directory linked: ${fullPath}` : `已关联项目目录：${fullPath}`);
-      setPickOpen(false);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : tx("关联失败", "Binding failed"));
-    } finally {
-      setBusy(false);
-      bindLockRef.current = false;
-    }
-  }
+    },
+    [activeProjectId, logAction, logActor, logEndAt, logResult, logStartAt]
+  );
 
   async function openLogsDetail() {
     setLogsOpen(true);
     setLogPage(1);
     setLogsBusy(true);
     try {
-      await loadLogs({ detail: true, page: 1 });
+      await loadDetailLogs(1);
     } finally {
       setLogsBusy(false);
     }
@@ -181,125 +101,104 @@ export default function SettingsPage() {
     setLogsBusy(true);
     setLogPage(page);
     try {
-      await loadLogs({ detail: true, page });
+      await loadDetailLogs(page);
     } finally {
       setLogsBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    setLogoutBusy(true);
+    try {
+      await logout();
+      nav("/login", { replace: true });
+    } finally {
+      setLogoutBusy(false);
     }
   }
 
   return (
     <div className="px-6 py-6">
       <div>
-        <div className="text-base font-semibold text-zinc-900">{tx("连接与设置", "Settings")}</div>
-        <div className="mt-1 text-sm text-zinc-600">{tx("配置 FTP 连接与查看最近操作日志", "Configure FTP connection and review recent activity logs")}</div>
+        <div className="text-base font-semibold text-zinc-900">{tx("设置", "Settings")}</div>
+        <div className="mt-1 text-sm text-zinc-600">{tx("外观与语言配置、账号信息与日志", "Appearance/language, account, and logs")}</div>
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <div className="rounded-lg border border-zinc-200 bg-white p-4">
-          <div className="text-sm font-semibold text-zinc-900">{tx("FTP 连接", "FTP Connection")}</div>
-          <div className="mt-3 grid grid-cols-1 gap-3">
-            <div>
-              <div className="text-xs text-zinc-600">Host</div>
-              <Input value={cfg.host} onChange={(e) => setCfg((s) => ({ ...s, host: e.target.value }))} placeholder="10.0.0.12" />
+          <div className="text-sm font-semibold text-zinc-900">{tx("外观与语言", "Appearance & Language")}</div>
+          <div className="mt-4 flex items-stretch">
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
+              <div className="text-xs text-zinc-500">{tx("主题", "Theme")}</div>
+              <ThemeToggle />
             </div>
-            <div>
-              <div className="text-xs text-zinc-600">Port</div>
-              <Input value={String(cfg.port)} onChange={(e) => setCfg((s) => ({ ...s, port: Number(e.target.value || 21) }))} placeholder="21" />
-            </div>
-            <div>
-              <div className="text-xs text-zinc-600">{tx("用户名", "Username")}</div>
-              <Input value={cfg.username} onChange={(e) => setCfg((s) => ({ ...s, username: e.target.value }))} />
-            </div>
-            <div>
-              <div className="text-xs text-zinc-600">{tx("密码", "Password")}</div>
-              <Input value={cfg.password} onChange={(e) => setCfg((s) => ({ ...s, password: e.target.value }))} type="password" />
-            </div>
-            <div>
-              <label className="flex items-center gap-2 text-sm text-zinc-700">
-                <input type="checkbox" checked={cfg.passiveMode} onChange={(e) => setCfg((s) => ({ ...s, passiveMode: e.target.checked }))} />
-                {tx("被动模式", "Passive Mode")}
-              </label>
-            </div>
-            <div>
-              <div className="text-xs text-zinc-600">remoteRoot</div>
-              <Input value={cfg.remoteRoot} onChange={(e) => setCfg((s) => ({ ...s, remoteRoot: e.target.value }))} placeholder="/" />
-            </div>
-            <div>
-              <div className="text-xs text-zinc-600">{tx("FTP 文件名编码", "FTP Filename Encoding")}</div>
-              <select
-                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm"
-                value={cfg.ftpEncoding}
-                onChange={(e) => setCfg((s) => ({ ...s, ftpEncoding: e.target.value as FtpConfig["ftpEncoding"] }))}
-              >
-                <option value="auto">{tx("自动（推荐）", "Auto (Recommended)")}</option>
-                <option value="utf-8">UTF-8</option>
-                <option value="gbk">{tx("GBK（常见老内网 FTP）", "GBK (common for legacy intranet FTP)")}</option>
-              </select>
-              <div className="mt-1 text-xs text-zinc-500">{tx("中文目录出现 550/乱码时优先试试 GBK。", "If Chinese directories show 550 or garbled text, try GBK first.")}</div>
+            <div className="mx-4 w-px self-stretch bg-zinc-200" />
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
+              <div className="text-xs text-zinc-500">{tx("语言", "Language")}</div>
+              <LanguageToggle />
             </div>
           </div>
-
-          <div className="mt-4 flex items-center gap-2">
-            <Button variant="secondary" onClick={test} disabled={busy || !cfg.host || !cfg.username}>
-              {tx("测试连接", "Test Connection")}
-            </Button>
-            <Button variant="secondary" onClick={() => setPickOpen(true)} disabled={busy || !testOk || !cfg.host || !cfg.username || !cfg.password}>
-              {tx("浏览目录并关联项目", "Browse Directories and Bind Project")}
-            </Button>
-            <Button onClick={save} disabled={busy || !activeProjectId || !cfg.host || !cfg.username || !cfg.password}>
-              {tx("保存到当前项目", "Save to Current Project")}
-            </Button>
-          </div>
-
-          <div className="mt-3 text-xs text-zinc-500">{tx("当前项目：", "Current Project: ")}{activeProject ? activeProject.name : tx("未选择", "Not Selected")}</div>
-          {msg ? <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-800">{msg}</div> : null}
         </div>
 
         <div className="rounded-lg border border-zinc-200 bg-white p-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm font-semibold text-zinc-900">{tx("最近日志", "Recent Logs")}</div>
-            <Button variant="secondary" size="sm" onClick={() => void openLogsDetail()}>
-              {tx("详情", "Details")}
+          <div className="text-sm font-semibold text-zinc-900">{tx("账号", "Account")}</div>
+          <div className="mt-3 text-sm text-zinc-700">
+            {tx("当前账号：", "Current user: ")}
+            <span className="ml-1 font-medium text-zinc-900">{user?.username ?? "-"}</span>
+          </div>
+          <div className="mt-4">
+            <Button variant="secondary" onClick={() => void handleLogout()} disabled={logoutBusy}>
+              <LogOut className="h-4 w-4" />
+              {logoutBusy ? tx("退出中...", "Signing out...") : tx("退出登录", "Sign Out")}
             </Button>
           </div>
-          <div className="mt-3 overflow-auto rounded-md border border-zinc-200">
-            <table className="w-full text-sm">
-              <thead className="bg-zinc-50 text-left text-xs text-zinc-600">
-                <tr>
-                  <th className="px-3 py-2">{tx("时间", "Time")}</th>
-                  <th className="px-3 py-2">{tx("操作者", "Operator")}</th>
-                  <th className="px-3 py-2">{tx("动作", "Action")}</th>
-                  <th className="px-3 py-2">{tx("结果", "Result")}</th>
-                  <th className="px-3 py-2">{tx("明细", "Detail")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {previewLogs.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="border-t border-zinc-100 px-3 py-3 text-sm text-zinc-600">
-                      {tx("暂无日志", "No logs")}
-                    </td>
-                  </tr>
-                ) : (
-                  previewLogs.map((l) => (
-                    <tr key={l.id} className="border-t border-zinc-100">
-                      <td className="px-3 py-2 font-mono text-xs text-zinc-700">{l.createdAt}</td>
-                      <td className="px-3 py-2 text-zinc-800">{l.actorUsername || "-"}</td>
-                      <td className="px-3 py-2 text-zinc-800">{l.action}</td>
-                      <td className="px-3 py-2">
-                        <span className={l.result === "ok" ? "rounded bg-emerald-50 px-2 py-1 text-xs text-emerald-800" : "rounded bg-red-50 px-2 py-1 text-xs text-red-800"}>
-                          {l.result}
-                        </span>
-                      </td>
-                      <td className="max-w-[360px] px-3 py-2 text-xs text-zinc-600">{l.detail}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 text-xs text-zinc-500">{tx('默认显示最近 10 条，点击“详情”可按条件分页筛选。', 'Shows the latest 10 entries by default. Click "Details" to filter and paginate.')}</div>
         </div>
+      </div>
+
+      <div className="mt-6 rounded-lg border border-zinc-200 bg-white p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm font-semibold text-zinc-900">{tx("最近日志", "Recent Logs")}</div>
+          <Button variant="secondary" size="sm" onClick={() => void openLogsDetail()}>
+            {tx("详情", "Details")}
+          </Button>
+        </div>
+        <div className="mt-3 overflow-auto rounded-md border border-zinc-200">
+          <table className="w-full text-sm">
+            <thead className="bg-zinc-50 text-left text-xs text-zinc-600">
+              <tr>
+                <th className="px-3 py-2">{tx("时间", "Time")}</th>
+                <th className="px-3 py-2">{tx("操作者", "Operator")}</th>
+                <th className="px-3 py-2">{tx("动作", "Action")}</th>
+                <th className="px-3 py-2">{tx("结果", "Result")}</th>
+                <th className="px-3 py-2">{tx("明细", "Detail")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {previewLogs.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="border-t border-zinc-100 px-3 py-3 text-sm text-zinc-600">
+                    {tx("暂无日志", "No logs")}
+                  </td>
+                </tr>
+              ) : (
+                previewLogs.map((l) => (
+                  <tr key={l.id} className="border-t border-zinc-100">
+                    <td className="px-3 py-2 font-mono text-xs text-zinc-700">{l.createdAt}</td>
+                    <td className="px-3 py-2 text-zinc-800">{l.actorUsername || "-"}</td>
+                    <td className="px-3 py-2 text-zinc-800">{l.action}</td>
+                    <td className="px-3 py-2">
+                      <span className={l.result === "ok" ? "rounded bg-emerald-50 px-2 py-1 text-xs text-emerald-800" : "rounded bg-red-50 px-2 py-1 text-xs text-red-800"}>
+                        {l.result}
+                      </span>
+                    </td>
+                    <td className="max-w-[520px] px-3 py-2 text-xs text-zinc-600">{l.detail}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="mt-3 text-xs text-zinc-500">{tx('默认显示最近 10 条，可按“当前项目”过滤；点击“详情”可分页筛选。', 'Shows the latest 10 entries by default; filtered by current project. Click "Details" to filter and paginate.')}</div>
       </div>
 
       <Modal
@@ -423,14 +322,6 @@ export default function SettingsPage() {
           </div>
         </div>
       </Modal>
-
-      <FtpDirPickerModal
-        open={pickOpen}
-        busy={busy}
-        cfg={cfg}
-        onClose={() => setPickOpen(false)}
-        onPick={pickAndBindProject}
-      />
     </div>
   );
 }

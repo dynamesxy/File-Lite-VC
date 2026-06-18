@@ -32,11 +32,11 @@ def _detect_lan_ip() -> str | None:
 
 
 def main() -> None:
-    host = os.environ.get("SQLFTPVC_HOST", "0.0.0.0")
-    port = int(os.environ.get("SQLFTPVC_PORT", "8848"))
+    host = os.environ.get("FILE_LITE_VC_HOST") or os.environ.get("SQLFTPVC_HOST", "0.0.0.0")
+    port = int(os.environ.get("FILE_LITE_VC_PORT") or os.environ.get("SQLFTPVC_PORT", "8848"))
     try:
         log_info(f"service.start host={host} port={port} runtimeLog={runtime_log_path()}")
-        print(f"SQLFTPVC running on: http://127.0.0.1:{port}/")
+        print(f"File-Lite-VC running on: http://127.0.0.1:{port}/")
         if host == "0.0.0.0":
             lan_ip = _detect_lan_ip()
             if lan_ip:

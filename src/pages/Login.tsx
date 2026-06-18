@@ -19,7 +19,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (user) {
-      nav("/", { replace: true });
+      nav("/projects", { replace: true });
     }
   }, [nav, user]);
 
@@ -29,7 +29,7 @@ export default function LoginPage() {
     setError(null);
     try {
       await login(username.trim(), password);
-      nav("/", { replace: true });
+      nav("/projects", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : tx("登录失败", "Login failed"));
     }
@@ -51,8 +51,8 @@ export default function LoginPage() {
         </div>
       </div>
       <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-        <div className="text-lg font-semibold text-zinc-900">{tx("登录 SQL FTP VC", "Sign In to SQL FTP VC")}</div>
-        <div className="mt-1 text-sm text-zinc-600">{tx("登录后可查看上传、提交、回退审计，并执行版本回退发布。", "After login, you can review upload/commit/rollback audits and publish rollbacks.")}</div>
+        <div className="text-lg font-semibold text-zinc-900">{tx("登录 File-Lite-VC", "Sign In to File-Lite-VC")}</div>
+        <div className="mt-1 text-sm text-zinc-600">{tx("登录后可查看上传、提交、回退审计，并执行版本回退。", "After login, you can review upload, commit, and rollback audits, and perform version rollbacks.")}</div>
 
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
           <div>

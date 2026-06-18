@@ -3,6 +3,7 @@ export type Project = {
   name: string;
   localWorkspacePath: string;
   remotePath: string;
+  scriptExtensions: string[];
   createdAt: string;
 };
 
@@ -31,6 +32,8 @@ export type User = {
 };
 
 export type FtpConfig = {
+  connectionMode: "ftp" | "local";
+  ftpProfileId?: string | null;
   host: string;
   port: number;
   username: string;
@@ -38,6 +41,22 @@ export type FtpConfig = {
   passiveMode: boolean;
   remoteRoot: string;
   ftpEncoding: "auto" | "utf-8" | "gbk";
+};
+
+export type FtpProfile = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  passiveMode: boolean;
+  remoteRoot: string;
+  ftpEncoding: "auto" | "utf-8" | "gbk";
+  createdAt: string;
+};
+
+export type FtpProfileFull = FtpProfile & {
+  password: string;
 };
 
 export type FtpDir = { name: string; path: string };
@@ -51,6 +70,15 @@ export type PullPushFile = {
   localExists: boolean;
   remoteExists: boolean;
   diffPreview: string | null;
+  conflictCount: number;
+  conflictLines: {
+    index: number;
+    localNo: number | null;
+    remoteNo: number | null;
+    localText: string;
+    remoteText: string;
+    selectedSide: "local" | "remote";
+  }[];
 };
 
 export type PullPushResult = {
@@ -61,7 +89,6 @@ export type RollbackResult = {
   ok: boolean;
   targetVersionId: string;
   targetVersionNo: string;
-  publishedRemotePath: string;
   workspacePath: string;
   createdVersionId: string | null;
   createdVersionNo: string | null;
@@ -137,11 +164,11 @@ export const api = {
   logout: () => apiFetch<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
 
   listProjects: () => apiFetch<Project[]>("/api/projects"),
-  createProject: (body: { name: string; localWorkspacePath: string; remotePath: string }) =>
+  createProject: (body: { name: string; localWorkspacePath: string; remotePath: string; scriptExtensions?: string[] }) =>
     apiFetch<Project>("/api/projects", { method: "POST", body: JSON.stringify(body) }),
   updateProject: (
     projectId: string,
-    body: Partial<{ name: string; localWorkspacePath: string; remotePath: string }>
+    body: Partial<{ name: string; localWorkspacePath: string; remotePath: string; scriptExtensions: string[] }>
   ) => apiFetch<Project>(`/api/projects/${projectId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteProject: (projectId: string) => apiFetch<{ ok: boolean }>(`/api/projects/${projectId}`, { method: "DELETE" }),
   batchDeleteProjects: (projectIds: string[]) =>
@@ -149,13 +176,30 @@ export const api = {
 
   getFtp: (projectId: string) => apiFetch<FtpConfig>(`/api/projects/${projectId}/ftp`),
   saveFtp: (projectId: string, cfg: FtpConfig) =>
-    apiFetch<{ host: string; port: number; username: string; passiveMode: boolean; remoteRoot: string; ftpEncoding: string }>(
+    apiFetch<{
+      connectionMode: "ftp" | "local";
+      ftpProfileId: string | null;
+      host: string;
+      port: number;
+      username: string;
+      passiveMode: boolean;
+      remoteRoot: string;
+      ftpEncoding: string;
+    }>(
       `/api/projects/${projectId}/ftp`,
       { method: "PUT", body: JSON.stringify(cfg) }
     ),
   testFtp: (cfg: FtpConfig) => apiFetch<{ ok: boolean; pwd?: string; features?: string[] }>("/api/ftp/test", { method: "POST", body: JSON.stringify(cfg) }),
   browseFtp: (cfg: FtpConfig, path: string) =>
     apiFetch<FtpBrowseResult>(`/api/ftp/browse?path=${encodeURIComponent(path)}`, { method: "POST", body: JSON.stringify(cfg) }),
+
+  listFtpProfiles: () => apiFetch<FtpProfile[]>("/api/ftp-profiles"),
+  getFtpProfile: (profileId: string) => apiFetch<FtpProfileFull>(`/api/ftp-profiles/${profileId}`),
+  createFtpProfile: (body: Omit<FtpProfileFull, "id" | "createdAt">) =>
+    apiFetch<FtpProfile>(`/api/ftp-profiles`, { method: "POST", body: JSON.stringify(body) }),
+  updateFtpProfile: (profileId: string, body: Omit<FtpProfileFull, "id" | "createdAt">) =>
+    apiFetch<FtpProfile>(`/api/ftp-profiles/${profileId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteFtpProfile: (profileId: string) => apiFetch<{ ok: boolean }>(`/api/ftp-profiles/${profileId}`, { method: "DELETE" }),
 
   pickDirectory: (initial?: string) =>
     apiFetch<PickDirectoryResult>(`/api/fs/pick-directory${initial ? `?initial=${encodeURIComponent(initial)}` : ""}`, { method: "POST" }),
@@ -168,18 +212,18 @@ export const api = {
     apiFetch<{ id: string; scriptId: string; projectId: string; versionNo: string; message: string; createdAt: string; content: string }>(
       `/api/versions/${versionId}/content`
     ),
-  rollbackToFtp: (versionId: string, message?: string) =>
-    apiFetch<RollbackResult>(`/api/versions/${versionId}/rollback-to-ftp`, {
+  rollbackToWorkspace: (versionId: string, message?: string) =>
+    apiFetch<RollbackResult>(`/api/versions/${versionId}/rollback-local`, {
       method: "POST",
       body: JSON.stringify({ message: message?.trim() || null }),
     }),
 
   pullPreview: (projectId: string) => apiFetch<PullPushResult>(`/api/projects/${projectId}/pull`, { method: "POST", body: JSON.stringify({ dryRun: true }) }),
-  pullApply: (projectId: string, overwrite: boolean) =>
-    apiFetch<PullPushResult>(`/api/projects/${projectId}/pull`, { method: "POST", body: JSON.stringify({ dryRun: false, overwrite }) }),
+  pullApply: (projectId: string, overwrite: boolean, conflictSelections?: Record<string, ("local" | "remote")[]>) =>
+    apiFetch<PullPushResult>(`/api/projects/${projectId}/pull`, { method: "POST", body: JSON.stringify({ dryRun: false, overwrite, conflictSelections }) }),
   pushPreview: (projectId: string) => apiFetch<PullPushResult>(`/api/projects/${projectId}/push`, { method: "POST", body: JSON.stringify({ dryRun: true }) }),
-  pushApply: (projectId: string, overwrite: boolean) =>
-    apiFetch<PullPushResult>(`/api/projects/${projectId}/push`, { method: "POST", body: JSON.stringify({ dryRun: false, overwrite }) }),
+  pushApply: (projectId: string, overwrite: boolean, conflictSelections?: Record<string, ("local" | "remote")[]>) =>
+    apiFetch<PullPushResult>(`/api/projects/${projectId}/push`, { method: "POST", body: JSON.stringify({ dryRun: false, overwrite, conflictSelections }) }),
 
   diffVersions: (leftVersionId: string, rightVersionId: string) =>
     apiFetch<DiffResult>(`/api/diff?leftVersionId=${encodeURIComponent(leftVersionId)}&rightVersionId=${encodeURIComponent(rightVersionId)}`),

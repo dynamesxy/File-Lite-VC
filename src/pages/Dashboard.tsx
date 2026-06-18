@@ -17,6 +17,7 @@ export default function Dashboard() {
   const { tx, isEn } = useI18n();
   const { projects, activeProjectId, refreshProjects, setActiveProjectId } = useAppStore();
   const activeProject = useMemo(() => projects.find((p) => p.id === activeProjectId) ?? null, [projects, activeProjectId]);
+  const [connectionMode, setConnectionMode] = useState<"ftp" | "local">("ftp");
 
   const [scripts, setScripts] = useState<Script[]>([]);
   const [loading, setLoading] = useState(false);
@@ -27,11 +28,15 @@ export default function Dashboard() {
   const [syncResult, setSyncResult] = useState<PullPushResult | null>(null);
   const [syncOverwrite, setSyncOverwrite] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [syncConflictSelections, setSyncConflictSelections] = useState<Record<string, ("local" | "remote")[]>>({});
 
   const [createOpen, setCreateOpen] = useState(false);
   const [pName, setPName] = useState("");
   const [pLocal, setPLocal] = useState("");
   const [pRemote, setPRemote] = useState("");
+  const [pConnMode, setPConnMode] = useState<"ftp" | "local">("local");
+  const [pFtpProfileId, setPFtpProfileId] = useState<string | null>(null);
+  const [pExts, setPExts] = useState<string[]>([".sql"]);
   const [createBusy, setCreateBusy] = useState(false);
   const createLockRef = useRef(false);
 
@@ -41,13 +46,15 @@ export default function Dashboard() {
   const [editName, setEditName] = useState("");
   const [editLocal, setEditLocal] = useState("");
   const [editRemote, setEditRemote] = useState("");
+  const [editExts, setEditExts] = useState<string[]>([".sql"]);
   const [editBusy, setEditBusy] = useState(false);
   const editLockRef = useRef(false);
 
   const [commitOpen, setCommitOpen] = useState(false);
-  const [commitTarget, setCommitTarget] = useState<Script | null>(null);
+  const [commitTargets, setCommitTargets] = useState<Script[]>([]);
   const [commitMessage, setCommitMessage] = useState("");
   const [commitBusy, setCommitBusy] = useState(false);
+  const [selectedScriptIds, setSelectedScriptIds] = useState<Set<string>>(new Set());
   const [uploadGuardOpen, setUploadGuardOpen] = useState(false);
   const [uploadGuardMessage, setUploadGuardMessage] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -102,6 +109,26 @@ export default function Dashboard() {
   }, [loadScripts]);
 
   useEffect(() => {
+    let cancelled = false;
+    async function loadConnectionMode() {
+      if (!activeProjectId) {
+        setConnectionMode("ftp");
+        return;
+      }
+      try {
+        const cfg = await api.getFtp(activeProjectId);
+        if (!cancelled) setConnectionMode(cfg.connectionMode);
+      } catch {
+        if (!cancelled) setConnectionMode("ftp");
+      }
+    }
+    void loadConnectionMode();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId]);
+
+  useEffect(() => {
     setSelectedProjectIds((prev) => {
       if (prev.size === 0) return prev;
       const ids = new Set(projects.map((p) => p.id));
@@ -113,6 +140,22 @@ export default function Dashboard() {
     });
   }, [projects]);
 
+  useEffect(() => {
+    setSelectedScriptIds((prev) => {
+      if (prev.size === 0) return prev;
+      const allowed = new Set(scripts.filter((s) => s.hasUncommittedChanges).map((s) => s.id));
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (allowed.has(id)) next.add(id);
+      }
+      return next;
+    });
+  }, [scripts]);
+
+  useEffect(() => {
+    setSelectedScriptIds(new Set());
+  }, [activeProjectId]);
+
   async function openPullPreview() {
     if (!activeProjectId) return;
     setSyncOpen("pull");
@@ -122,8 +165,15 @@ export default function Dashboard() {
     try {
       const r = await api.pullPreview(activeProjectId);
       setSyncResult(r);
+      setSyncConflictSelections(
+        Object.fromEntries(
+          r.files
+            .filter((f) => f.conflictCount > 0)
+            .map((f) => [f.relativePath, f.conflictLines.map((line) => line.selectedSide)])
+        )
+      );
     } catch (e) {
-      setSyncResult({ files: [{ relativePath: "", status: "error", localExists: false, remoteExists: false, diffPreview: e instanceof Error ? e.message : tx("未知错误", "Unknown error") }] });
+      setSyncResult({ files: [{ relativePath: "", status: "error", localExists: false, remoteExists: false, diffPreview: e instanceof Error ? e.message : tx("未知错误", "Unknown error"), conflictCount: 0, conflictLines: [] }] });
     } finally {
       setSyncBusy(false);
     }
@@ -146,8 +196,15 @@ export default function Dashboard() {
     try {
       const r = await api.pushPreview(activeProjectId);
       setSyncResult(r);
+      setSyncConflictSelections(
+        Object.fromEntries(
+          r.files
+            .filter((f) => f.conflictCount > 0)
+            .map((f) => [f.relativePath, f.conflictLines.map((line) => line.selectedSide)])
+        )
+      );
     } catch (e) {
-      setSyncResult({ files: [{ relativePath: "", status: "error", localExists: false, remoteExists: false, diffPreview: e instanceof Error ? e.message : tx("未知错误", "Unknown error") }] });
+      setSyncResult({ files: [{ relativePath: "", status: "error", localExists: false, remoteExists: false, diffPreview: e instanceof Error ? e.message : tx("未知错误", "Unknown error"), conflictCount: 0, conflictLines: [] }] });
     } finally {
       setSyncBusy(false);
     }
@@ -158,14 +215,22 @@ export default function Dashboard() {
     const currentMode = syncOpen;
     setSyncBusy(true);
     try {
-      const r = currentMode === "pull" ? await api.pullApply(activeProjectId, syncOverwrite) : await api.pushApply(activeProjectId, syncOverwrite);
+      const r =
+        currentMode === "pull"
+          ? await api.pullApply(activeProjectId, syncOverwrite, syncConflictSelections)
+          : await api.pushApply(activeProjectId, syncOverwrite, syncConflictSelections);
       setSyncResult(r);
       await loadScripts();
       await refreshProjects();
       setSyncOpen(null);
-      notifySuccess(currentMode === "pull" ? tx("FTP 拉取已完成", "FTP pull completed") : tx("FTP 上传已完成", "FTP upload completed"));
+      setSyncConflictSelections({});
+      notifySuccess(
+        currentMode === "pull"
+          ? (connectionMode === "local" ? tx("本地目录拉取已完成", "Local directory pull completed") : tx("FTP 拉取已完成", "FTP pull completed"))
+          : (connectionMode === "local" ? tx("本地目录上传已完成", "Local directory upload completed") : tx("FTP 上传已完成", "FTP upload completed"))
+      );
     } catch (e) {
-      setSyncResult({ files: [{ relativePath: "", status: "error", localExists: false, remoteExists: false, diffPreview: e instanceof Error ? e.message : tx("未知错误", "Unknown error") }] });
+      setSyncResult({ files: [{ relativePath: "", status: "error", localExists: false, remoteExists: false, diffPreview: e instanceof Error ? e.message : tx("未知错误", "Unknown error"), conflictCount: 0, conflictLines: [] }] });
     } finally {
       setSyncBusy(false);
     }
@@ -175,13 +240,50 @@ export default function Dashboard() {
     if (createLockRef.current) return;
     createLockRef.current = true;
     setCreateBusy(true);
+    let createdId: string | null = null;
     try {
       setError(null);
-      const created = await api.createProject({ name: pName.trim(), localWorkspacePath: pLocal.trim(), remotePath: pRemote.trim() });
+      const created = await api.createProject({
+        name: pName.trim(),
+        localWorkspacePath: pLocal.trim(),
+        remotePath: pRemote.trim(),
+        scriptExtensions: pExts,
+      });
+      createdId = created.id;
+      if (pConnMode === "local") {
+        await api.saveFtp(created.id, {
+          connectionMode: "local",
+          ftpProfileId: null,
+          host: "",
+          port: 21,
+          username: "",
+          password: "",
+          passiveMode: true,
+          remoteRoot: "/",
+          ftpEncoding: "auto",
+        });
+      } else {
+        if (!pFtpProfileId) throw new Error(tx("请选择一个 FTP 连接", "Please select a FTP profile"));
+        const prof = await api.getFtpProfile(pFtpProfileId);
+        await api.saveFtp(created.id, {
+          connectionMode: "ftp",
+          ftpProfileId: pFtpProfileId,
+          host: prof.host,
+          port: prof.port,
+          username: prof.username,
+          password: prof.password,
+          passiveMode: prof.passiveMode,
+          remoteRoot: prof.remoteRoot,
+          ftpEncoding: prof.ftpEncoding,
+        });
+      }
       setCreateOpen(false);
       setPName("");
       setPLocal("");
       setPRemote("");
+      setPConnMode("local");
+      setPFtpProfileId(null);
+      setPExts([".sql"]);
       await refreshProjects();
       setActiveProjectId(created.id);
       await loadScripts();
@@ -189,6 +291,13 @@ export default function Dashboard() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : tx("创建项目失败", "Failed to create project");
       setError(msg);
+      if (createdId) {
+        try {
+          await api.deleteProject(createdId);
+        } catch {
+          void 0;
+        }
+      }
       throw new Error(msg);
     } finally {
       setCreateBusy(false);
@@ -241,6 +350,7 @@ export default function Dashboard() {
     setEditName(p.name);
     setEditLocal(p.localWorkspacePath);
     setEditRemote(p.remotePath);
+    setEditExts(p.scriptExtensions && p.scriptExtensions.length > 0 ? p.scriptExtensions : [".sql"]);
     setEditOpen(true);
   }
 
@@ -258,6 +368,7 @@ export default function Dashboard() {
         name: editName.trim(),
         localWorkspacePath: editLocal.trim(),
         remotePath: editRemote.trim(),
+        scriptExtensions: editExts,
       });
       setEditOpen(false);
       setEditProject(null);
@@ -275,19 +386,51 @@ export default function Dashboard() {
   }
 
   async function commitNow() {
-    if (!commitTarget) return;
+    if (commitTargets.length === 0) return;
     setCommitBusy(true);
     try {
-      await api.commit(commitTarget.id, commitMessage.trim());
+      const successPaths: string[] = [];
+      const failedPaths: string[] = [];
+      for (const target of commitTargets) {
+        try {
+          await api.commit(target.id, commitMessage.trim());
+          successPaths.push(target.relativePath);
+        } catch {
+          failedPaths.push(target.relativePath);
+        }
+      }
       setCommitOpen(false);
-      setCommitTarget(null);
+      setCommitTargets([]);
       setCommitMessage("");
+      setSelectedScriptIds(new Set());
       await loadScripts();
+      if (successPaths.length > 0) {
+        notifySuccess(
+          successPaths.length === 1
+            ? tx("版本已提交", "Version committed")
+            : tx(`已提交 ${successPaths.length} 个文件`, `Committed ${successPaths.length} files`)
+        );
+      }
+      if (failedPaths.length > 0) {
+        setError(
+          failedPaths.length === 1
+            ? tx(`提交失败：${failedPaths[0]}`, `Commit failed: ${failedPaths[0]}`)
+            : tx(`有 ${failedPaths.length} 个文件提交失败`, `${failedPaths.length} files failed to commit`)
+        );
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : tx("提交失败", "Commit failed"));
     } finally {
       setCommitBusy(false);
     }
+  }
+
+  function openBatchCommit() {
+    const targets = scripts.filter((s) => s.hasUncommittedChanges && selectedScriptIds.has(s.id));
+    if (targets.length === 0) return;
+    setCommitTargets(targets);
+    setCommitMessage("");
+    setCommitOpen(true);
   }
 
   return (
@@ -360,7 +503,7 @@ export default function Dashboard() {
         <div className="rounded-lg border border-zinc-200 bg-white p-4">
           <div className="text-sm font-semibold text-zinc-900">{tx("同步状态", "Sync Status")}</div>
           <div className="mt-2 text-sm text-zinc-600">
-            <div>{tx("远端目录：", "Remote Path: ")}{activeProject ? activeProject.remotePath : "-"}</div>
+            <div>{connectionMode === "local" ? tx("目标目录：", "Target Directory: ") : tx("远端目录：", "Remote Path: ")}{activeProject ? activeProject.remotePath : "-"}</div>
             <div className="mt-1">{tx("本地工作区：", "Local Workspace: ")}{activeProject ? activeProject.localWorkspacePath : "-"}</div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
@@ -373,12 +516,21 @@ export default function Dashboard() {
               {tx("上传", "Upload")}
             </Button>
           </div>
-          <div className="mt-3 text-xs text-zinc-500">{tx('首次使用请先在“连接与设置”配置 FTP。', 'For first-time use, configure FTP in "Settings" first.')}</div>
+          <div className="mt-3 text-xs text-zinc-500">
+            {connectionMode === "local"
+              ? tx('首次使用请先在“连接与设置”里选择“本地目录”模式并关联目标目录。', 'For first-time use, choose "Local Directory" mode in "Settings" and bind a target directory.')
+              : tx('首次使用请先在“连接与设置”配置 FTP。', 'For first-time use, configure FTP in "Settings" first.')}
+          </div>
         </div>
 
         <div className="rounded-lg border border-zinc-200 bg-white p-4 lg:col-span-2">
           <div className="flex items-center justify-between">
             <div className="text-sm font-semibold text-zinc-900">{tx("脚本清单", "Scripts")}</div>
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" onClick={openBatchCommit} disabled={selectedScriptIds.size === 0}>
+                {tx(`批量提交（${selectedScriptIds.size}）`, `Batch Commit (${selectedScriptIds.size})`)}
+              </Button>
+            </div>
           </div>
 
           {!activeProjectId ? (
@@ -386,13 +538,34 @@ export default function Dashboard() {
           ) : loading ? (
             <div className="mt-3 animate-pulse rounded-md border border-zinc-200 bg-zinc-50 px-3 py-3 text-sm text-zinc-600">{tx("加载中...", "Loading...")}</div>
           ) : scripts.length === 0 ? (
-            <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-3 text-sm text-zinc-600">{tx("工作区中未找到 .sql 文件", "No .sql files were found in the workspace")}</div>
+            <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-3 text-sm text-zinc-600">
+              {activeProject?.scriptExtensions?.length
+                ? (isEn ? `No ${activeProject.scriptExtensions.join(", ")} files were found in the workspace` : `工作区中未找到 ${activeProject.scriptExtensions.join("、")} 文件`)
+                : tx("工作区中未找到脚本文件", "No script files were found in the workspace")}
+            </div>
           ) : (
             <div className="mt-3">
               <ScriptsTable
                 scripts={scripts}
+                selectedScriptIds={selectedScriptIds}
+                onToggleSelect={(scriptId) => {
+                  setSelectedScriptIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(scriptId)) next.delete(scriptId);
+                    else next.add(scriptId);
+                    return next;
+                  });
+                }}
+                onToggleSelectAll={() => {
+                  const committable = scripts.filter((s) => s.hasUncommittedChanges);
+                  setSelectedScriptIds((prev) => {
+                    const allSelected = committable.length > 0 && committable.every((s) => prev.has(s.id));
+                    if (allSelected) return new Set();
+                    return new Set(committable.map((s) => s.id));
+                  });
+                }}
                 onCommit={(s) => {
-                  setCommitTarget(s);
+                  setCommitTargets([s]);
                   setCommitMessage("");
                   setCommitOpen(true);
                 }}
@@ -408,12 +581,18 @@ export default function Dashboard() {
         name={pName}
         localPath={pLocal}
         remotePath={pRemote}
+        connectionMode={pConnMode}
+        ftpProfileId={pFtpProfileId}
+        scriptExtensions={pExts}
         onClose={() => setCreateOpen(false)}
         onCreate={createProject}
         onChange={(patch) => {
           if (patch.name !== undefined) setPName(patch.name);
           if (patch.localPath !== undefined) setPLocal(patch.localPath);
           if (patch.remotePath !== undefined) setPRemote(patch.remotePath);
+          if (patch.connectionMode !== undefined) setPConnMode(patch.connectionMode);
+          if (patch.ftpProfileId !== undefined) setPFtpProfileId(patch.ftpProfileId);
+          if (patch.scriptExtensions !== undefined) setPExts(patch.scriptExtensions);
         }}
       />
 
@@ -424,6 +603,7 @@ export default function Dashboard() {
         name={editName}
         localPath={editLocal}
         remotePath={editRemote}
+        scriptExtensions={editExts}
         onClose={() => {
           if (!editBusy) setEditOpen(false);
         }}
@@ -432,15 +612,19 @@ export default function Dashboard() {
           if (patch.name !== undefined) setEditName(patch.name);
           if (patch.localPath !== undefined) setEditLocal(patch.localPath);
           if (patch.remotePath !== undefined) setEditRemote(patch.remotePath);
+          if (patch.scriptExtensions !== undefined) setEditExts(patch.scriptExtensions);
         }}
       />
 
       <CommitModal
         open={commitOpen}
         busy={commitBusy}
-        target={commitTarget}
+        targets={commitTargets}
         message={commitMessage}
-        onClose={() => setCommitOpen(false)}
+        onClose={() => {
+          setCommitOpen(false);
+          setCommitTargets([]);
+        }}
         onChangeMessage={setCommitMessage}
         onCommit={commitNow}
       />
@@ -448,14 +632,26 @@ export default function Dashboard() {
       <SyncModal
         open={syncOpen !== null}
         mode={syncOpen ?? "pull"}
+        connectionMode={connectionMode}
         busy={syncBusy}
         overwrite={syncOverwrite}
         result={syncResult}
+        conflictSelections={syncConflictSelections}
         onClose={() => {
           setSyncOpen(null);
           setSyncResult(null);
+          setSyncConflictSelections({});
         }}
         onToggleOverwrite={setSyncOverwrite}
+        onChangeConflictSelection={(relativePath, lineIndex, side) => {
+          setSyncConflictSelections((prev) => {
+            const next = { ...prev };
+            const fileSelections = [...(next[relativePath] ?? [])];
+            fileSelections[lineIndex] = side;
+            next[relativePath] = fileSelections;
+            return next;
+          });
+        }}
         onApply={applySync}
       />
 

@@ -99,7 +99,7 @@ export default function ScriptDetail() {
     setError(null);
     setSuccess(null);
     try {
-      const result = await api.rollbackToFtp(version.id);
+      const result = await api.rollbackToWorkspace(version.id);
       await load();
       setSuccess(result.message);
     } catch (e) {
@@ -129,7 +129,7 @@ export default function ScriptDetail() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <Link to="/" className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100">
+            <Link to="/commits" className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100">
               <ArrowLeft className="h-4 w-4" />
             {tx("返回", "Back")}
             </Link>
@@ -175,7 +175,7 @@ export default function ScriptDetail() {
                         type="button"
                       >
                         <RotateCcw className="h-4 w-4" />
-                        {tx("回退并发布", "Rollback & Publish")}
+                        {tx("回退到本地", "Rollback to Local")}
                       </button>
                     </div>
                   </div>
@@ -275,7 +275,7 @@ export default function ScriptDetail() {
 
       <Modal
         open={rollbackConfirmOpen}
-        title={tx("确认回退并发布", "Confirm Rollback & Publish")}
+        title={tx("确认回退到本地", "Confirm Rollback to Local")}
         onClose={() => {
           if (!busy) setRollbackConfirmOpen(false);
         }}
@@ -307,7 +307,13 @@ export default function ScriptDetail() {
         }
       >
         <div className="text-sm text-zinc-700">
-          {rollbackTarget ? (isEn ? `Rollback to ${rollbackTarget.versionNo} and publish to FTP immediately?` : `确认回退到 ${rollbackTarget.versionNo} 并立即发布到 FTP 吗？`) : tx("确认执行回退并发布吗？", "Confirm rollback and publish?")}
+          {rollbackTarget
+            ? (
+              isEn
+                ? `Rollback to ${rollbackTarget.versionNo} in the local workspace only? Remote targets will not be changed.`
+                : `确认将本地工作区回退到 ${rollbackTarget.versionNo} 吗？远程目标不会被修改。`
+            )
+            : tx("确认仅回退本地工作区吗？", "Confirm rollback in local workspace only?")}
         </div>
       </Modal>
     </div>

@@ -35,8 +35,15 @@ def _ensure_schema() -> None:
         if not _has_column(conn, "versions", "project_id"):
             conn.exec_driver_sql("ALTER TABLE versions ADD COLUMN project_id TEXT")
             conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_versions_project_id ON versions(project_id)")
+        if not _has_column(conn, "projects", "script_extensions"):
+            conn.exec_driver_sql("ALTER TABLE projects ADD COLUMN script_extensions TEXT DEFAULT '[\".sql\"]'")
+        if not _has_column(conn, "ftp_settings", "connection_mode"):
+            conn.exec_driver_sql("ALTER TABLE ftp_settings ADD COLUMN connection_mode TEXT DEFAULT 'ftp'")
         if not _has_column(conn, "ftp_settings", "ftp_encoding"):
             conn.exec_driver_sql("ALTER TABLE ftp_settings ADD COLUMN ftp_encoding TEXT DEFAULT 'auto'")
+        if not _has_column(conn, "ftp_settings", "ftp_profile_id"):
+            conn.exec_driver_sql("ALTER TABLE ftp_settings ADD COLUMN ftp_profile_id TEXT")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_ftp_settings_ftp_profile_id ON ftp_settings(ftp_profile_id)")
         if not _has_column(conn, "event_logs", "actor_user_id"):
             conn.exec_driver_sql("ALTER TABLE event_logs ADD COLUMN actor_user_id TEXT")
             conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_event_logs_actor_user_id ON event_logs(actor_user_id)")

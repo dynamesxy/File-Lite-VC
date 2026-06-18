@@ -53,7 +53,7 @@ def main() -> int:
         "--clean",
         "--onefile",
         "--name",
-        "sqlftpvc",
+        "File-Lite-VC",
         "--distpath",
         str(out_dir),
         "--workpath",
@@ -82,7 +82,7 @@ def main() -> int:
     print("Building executable with PyInstaller...")
     subprocess.check_call(args, cwd=str(root))
 
-    exe_name = "sqlftpvc.exe" if os.name == "nt" else "sqlftpvc"
+    exe_name = "File-Lite-VC.exe" if os.name == "nt" else "File-Lite-VC"
     built_exe = out_dir / exe_name
 
     last_path_file = stable_bin_dir / "last_exe_path.txt"

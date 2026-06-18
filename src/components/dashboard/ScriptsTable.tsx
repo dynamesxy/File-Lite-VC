@@ -4,13 +4,30 @@ import { Link } from "react-router-dom";
 import { useI18n } from "@/i18n";
 import type { Script } from "@/utils/api";
 
-export function ScriptsTable(props: { scripts: Script[]; onCommit: (s: Script) => void }) {
+export function ScriptsTable(props: {
+  scripts: Script[];
+  selectedScriptIds: Set<string>;
+  onToggleSelect: (scriptId: string) => void;
+  onToggleSelectAll: () => void;
+  onCommit: (s: Script) => void;
+}) {
   const { tx } = useI18n();
+  const selectableScripts = props.scripts.filter((s) => s.hasUncommittedChanges);
+  const allSelected = selectableScripts.length > 0 && selectableScripts.every((s) => props.selectedScriptIds.has(s.id));
   return (
     <div className="overflow-auto rounded-md border border-zinc-200">
       <table className="w-full text-sm">
         <thead className="bg-zinc-50 text-left text-xs text-zinc-600">
           <tr>
+            <th className="px-3 py-2">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={props.onToggleSelectAll}
+                disabled={selectableScripts.length === 0}
+                aria-label={tx("全选可提交脚本", "Select all committable scripts")}
+              />
+            </th>
             <th className="px-3 py-2">{tx("路径", "Path")}</th>
             <th className="px-3 py-2">{tx("最新版本", "Latest Version")}</th>
             <th className="px-3 py-2">{tx("工作区改动", "Workspace Status")}</th>
@@ -20,6 +37,15 @@ export function ScriptsTable(props: { scripts: Script[]; onCommit: (s: Script) =
         <tbody>
           {props.scripts.map((s) => (
             <tr key={s.id} className="border-t border-zinc-100">
+              <td className="px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={props.selectedScriptIds.has(s.id)}
+                  onChange={() => props.onToggleSelect(s.id)}
+                  disabled={!s.hasUncommittedChanges}
+                  aria-label={tx(`选择 ${s.relativePath}`, `Select ${s.relativePath}`)}
+                />
+              </td>
               <td className="px-3 py-2 font-mono text-xs text-zinc-800">{s.relativePath}</td>
               <td className="px-3 py-2 text-zinc-700">{s.latestVersionNo ?? "-"}</td>
               <td className="px-3 py-2">

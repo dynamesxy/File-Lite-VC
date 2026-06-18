@@ -16,9 +16,10 @@ export function ProjectEditModal(props: {
   name: string;
   localPath: string;
   remotePath: string;
+  scriptExtensions: string[];
   onClose: () => void;
   onSave: () => Promise<void>;
-  onChange: (patch: { name?: string; localPath?: string; remotePath?: string }) => void;
+  onChange: (patch: { name?: string; localPath?: string; remotePath?: string; scriptExtensions?: string[] }) => void;
 }) {
   const { tx } = useI18n();
   const [pickBusy, setPickBusy] = useState(false);
@@ -26,9 +27,38 @@ export function ProjectEditModal(props: {
   const [ftpErr, setFtpErr] = useState<string | null>(null);
   const [ftpPickOpen, setFtpPickOpen] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [customExt, setCustomExt] = useState("");
+  const builtinExts = [".sql", ".java", ".vue", ".js"];
+  const selectedExtSet = useMemo(() => new Set(props.scriptExtensions.map((x) => x.toLowerCase())), [props.scriptExtensions]);
+
+  function normalizeExt(value: string) {
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed) return "";
+    return trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+  }
+
+  function toggleExt(ext: string) {
+    const set = new Set(props.scriptExtensions.map((x) => x.toLowerCase()));
+    if (set.has(ext)) set.delete(ext);
+    else set.add(ext);
+    props.onChange({ scriptExtensions: Array.from(set) });
+  }
+
+  function addCustomExt() {
+    const ext = normalizeExt(customExt);
+    if (!ext) return;
+    const set = new Set(props.scriptExtensions.map((x) => x.toLowerCase()));
+    set.add(ext);
+    props.onChange({ scriptExtensions: Array.from(set) });
+    setCustomExt("");
+  }
+
+  function removeExt(ext: string) {
+    props.onChange({ scriptExtensions: props.scriptExtensions.filter((x) => x.toLowerCase() !== ext.toLowerCase()) });
+  }
 
   const browseCfg = useMemo<FtpConfig | null>(() => {
-    if (!ftpCfg) return null;
+    if (!ftpCfg || ftpCfg.connectionMode !== "ftp") return null;
     return { ...ftpCfg, remoteRoot: "/" };
   }, [ftpCfg]);
 
@@ -39,6 +69,7 @@ export function ProjectEditModal(props: {
     setPickBusy(false);
     setFtpCfg(null);
     setSubmitError(null);
+    setCustomExt("");
   }, [props.open]);
 
   async function handleSave() {
@@ -76,7 +107,7 @@ export function ProjectEditModal(props: {
       setFtpCfg(r);
       return r;
     } catch (e) {
-      setFtpErr(e instanceof Error ? e.message : tx("加载 FTP 配置失败，请先到“连接与设置”保存 FTP 配置", 'Failed to load FTP settings. Please save FTP settings in "Settings" first.'));
+      setFtpErr(e instanceof Error ? e.message : tx("加载 FTP 配置失败，请先到“连接”保存 FTP 配置", 'Failed to load FTP settings. Please save FTP settings in "Connections" first.'));
       return null;
     }
   }
@@ -88,6 +119,11 @@ export function ProjectEditModal(props: {
     try {
       const r = await ensureFtpCfg();
       if (!r) return;
+      if (r.connectionMode === "local") {
+        const picked = await api.pickDirectory(props.remotePath || undefined);
+        props.onChange({ remotePath: picked.path });
+        return;
+      }
       setFtpPickOpen(true);
     } finally {
       setPickBusy(false);
@@ -106,7 +142,10 @@ export function ProjectEditModal(props: {
           <Button variant="secondary" onClick={props.onClose} disabled={props.busy}>
             {tx("取消", "Cancel")}
           </Button>
-          <Button onClick={handleSave} disabled={props.busy || !props.name.trim() || !props.localPath.trim() || !props.remotePath.trim()}>
+          <Button
+            onClick={handleSave}
+            disabled={props.busy || !props.name.trim() || !props.localPath.trim() || !props.remotePath.trim() || props.scriptExtensions.length === 0}
+          >
             {tx("保存", "Save")}
           </Button>
         </>
@@ -129,15 +168,62 @@ export function ProjectEditModal(props: {
           </div>
         </div>
         <div>
-          <div className="text-xs text-zinc-600">{tx("FTP 远端目录（绝对路径）", "FTP Remote Directory (Absolute Path)")}</div>
+          <div className="text-xs text-zinc-600">{ftpCfg?.connectionMode === "local" ? tx("本地目标目录", "Local Target Directory") : tx("FTP 远端目录（绝对路径）", "FTP Remote Directory (Absolute Path)")}</div>
           <div className="flex items-center gap-2">
             <div className="flex-1">
-              <Input value={props.remotePath} onChange={(e) => props.onChange({ remotePath: e.target.value })} placeholder={tx("例如：/交付/数据库/项目A", "Example: /delivery/database/projectA")} />
+              <Input
+                value={props.remotePath}
+                onChange={(e) => props.onChange({ remotePath: e.target.value })}
+                placeholder={ftpCfg?.connectionMode === "local" ? tx("例如：D:\\deploy\\sql", "Example: D:\\deploy\\sql") : tx("例如：/交付/数据库/项目A", "Example: /delivery/database/projectA")}
+              />
             </div>
             <Button variant="secondary" onClick={openFtpPicker} disabled={props.busy || pickBusy}>
-              {tx("选择目录", "Choose Directory")}
+              {ftpCfg?.connectionMode === "local" ? tx("选择文件夹", "Choose Folder") : tx("选择目录", "Choose Directory")}
             </Button>
           </div>
+        </div>
+        <div>
+          <div className="text-xs text-zinc-600">{tx("文件类型", "File Types")}</div>
+          <div className="mt-1 flex flex-wrap gap-3 text-sm text-zinc-700">
+            {builtinExts.map((ext) => (
+              <label key={ext} className="inline-flex items-center gap-2">
+                <input type="checkbox" checked={selectedExtSet.has(ext)} onChange={() => toggleExt(ext)} />
+                {ext}
+              </label>
+            ))}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <div className="flex-1">
+              <Input
+                value={customExt}
+                onChange={(e) => setCustomExt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustomExt();
+                  }
+                }}
+                placeholder={tx("输入自定义扩展名，例如：.ts 或 .xml", "Enter a custom extension, e.g. .ts or .xml")}
+              />
+            </div>
+            <Button variant="secondary" size="sm" onClick={addCustomExt} disabled={!normalizeExt(customExt)}>
+              {tx("添加", "Add")}
+            </Button>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {props.scriptExtensions.map((ext) => (
+              <button
+                key={ext}
+                type="button"
+                className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-700 hover:bg-zinc-100"
+                onClick={() => removeExt(ext)}
+                title={tx("点击移除", "Click to remove")}
+              >
+                {ext} ×
+              </button>
+            ))}
+          </div>
+          <div className="mt-1 text-xs text-zinc-500">{tx("至少选择一种类型。", "Select at least one type.")}</div>
         </div>
         {ftpErr ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{ftpErr}</div> : null}
         {submitError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{submitError}</div> : null}

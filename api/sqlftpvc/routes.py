@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import shutil
+import json
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,6 +27,7 @@ from .ftp import (
     upload_bytes,
 )
 from .models import EventLog, FtpSetting, Project, Script, User, UserSession, Version
+from .models import FtpProfile
 from .runtime_log import log_error, log_info
 from .security import (
     decrypt_text,
@@ -36,7 +38,7 @@ from .security import (
     verify_password,
 )
 from .versioning import commit_script, read_snapshot, sha256_hex, upsert_script
-from .workspace import list_sql_files as list_workspace_sql
+from .workspace import list_files as list_workspace_files
 
 
 api_router = APIRouter(prefix="/api")
@@ -48,6 +50,7 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     localWorkspacePath: str
     remotePath: str
+    scriptExtensions: list[str] | None = None
 
 
 class ProjectOut(BaseModel):
@@ -55,6 +58,7 @@ class ProjectOut(BaseModel):
     name: str
     localWorkspacePath: str
     remotePath: str
+    scriptExtensions: list[str]
     createdAt: str
 
 
@@ -62,6 +66,7 @@ class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     localWorkspacePath: str | None = None
     remotePath: str | None = None
+    scriptExtensions: list[str] | None = None
 
 
 class ProjectBatchDeleteIn(BaseModel):
@@ -69,6 +74,8 @@ class ProjectBatchDeleteIn(BaseModel):
 
 
 class FtpConfigIn(BaseModel):
+    connectionMode: str = "ftp"
+    ftpProfileId: str | None = None
     host: str
     port: int = 21
     username: str
@@ -79,6 +86,8 @@ class FtpConfigIn(BaseModel):
 
 
 class FtpSettingOut(BaseModel):
+    connectionMode: str
+    ftpProfileId: str | None = None
     host: str
     port: int
     username: str
@@ -88,6 +97,8 @@ class FtpSettingOut(BaseModel):
 
 
 class FtpSettingFullOut(BaseModel):
+    connectionMode: str
+    ftpProfileId: str | None = None
     host: str
     port: int
     username: str
@@ -95,6 +106,33 @@ class FtpSettingFullOut(BaseModel):
     passiveMode: bool
     remoteRoot: str
     ftpEncoding: str
+
+
+class FtpProfileOut(BaseModel):
+    id: str
+    name: str
+    host: str
+    port: int
+    username: str
+    passiveMode: bool
+    remoteRoot: str
+    ftpEncoding: str
+    createdAt: str
+
+
+class FtpProfileFullOut(FtpProfileOut):
+    password: str
+
+
+class FtpProfileIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    host: str
+    port: int = 21
+    username: str
+    password: str
+    passiveMode: bool = True
+    remoteRoot: str = "/"
+    ftpEncoding: str = "auto"
 
 
 class FtpBrowseOut(BaseModel):
@@ -106,6 +144,16 @@ class PullPushIn(BaseModel):
     dryRun: bool = True
     overwrite: bool = False
     paths: list[str] | None = None
+    conflictSelections: dict[str, list[str]] | None = None
+
+
+class ConflictLineOut(BaseModel):
+    index: int
+    localNo: int | None
+    remoteNo: int | None
+    localText: str
+    remoteText: str
+    selectedSide: str
 
 
 class PickDirectoryOut(BaseModel):
@@ -118,6 +166,8 @@ class FileStatus(BaseModel):
     localExists: bool
     remoteExists: bool
     diffPreview: str | None = None
+    conflictCount: int = 0
+    conflictLines: list[ConflictLineOut] = Field(default_factory=list)
 
 
 class PullPushOut(BaseModel):
@@ -170,7 +220,6 @@ class RollbackOut(BaseModel):
     ok: bool
     targetVersionId: str
     targetVersionNo: str
-    publishedRemotePath: str
     workspacePath: str
     createdVersionId: str | None = None
     createdVersionNo: str | None = None
@@ -344,7 +393,25 @@ def _get_ftp_setting(project_id: str) -> FtpSetting:
         return st
 
 
-def _setting_to_cfg(st: FtpSetting) -> FtpConfig:
+def _normalize_connection_mode(mode: str | None) -> str:
+    return "local" if (mode or "").strip().lower() == "local" else "ftp"
+
+
+def _setting_to_cfg(session, st: FtpSetting) -> FtpConfig:
+    profile_id = getattr(st, "ftp_profile_id", None)
+    if profile_id:
+        prof = session.get(FtpProfile, profile_id)
+        if not prof:
+            raise HTTPException(status_code=400, detail="ftp profile not found")
+        return FtpConfig(
+            host=prof.host,
+            port=prof.port,
+            username=prof.username,
+            password=decrypt_text(prof.password_enc),
+            passive_mode=prof.passive_mode,
+            remote_root=prof.remote_root,
+            ftp_encoding=getattr(prof, "ftp_encoding", "auto") or "auto",
+        )
     return FtpConfig(
         host=st.host,
         port=st.port,
@@ -360,6 +427,80 @@ def _resolve_project_remote_dir(cfg: FtpConfig, project_remote_path: str) -> str
     if project_remote_path and project_remote_path.strip().startswith("/"):
         return remote_join(project_remote_path)
     return remote_join(cfg.remote_root, project_remote_path)
+
+
+def _resolve_project_local_dir(proj: Project) -> Path:
+    target_raw = (proj.remote_path or "").strip()
+    if not target_raw:
+        raise HTTPException(status_code=400, detail="local target path not configured")
+    target = Path(target_raw).expanduser()
+    if not target.is_absolute():
+        raise HTTPException(status_code=400, detail="local target path must be an absolute path")
+    return target.resolve()
+
+
+def _parse_script_extensions(raw: str | None) -> list[str]:
+    if not raw:
+        return [".sql"]
+    s = raw.strip()
+    if not s:
+        return [".sql"]
+    try:
+        if s.startswith("["):
+            data = json.loads(s)
+            if isinstance(data, list):
+                out: list[str] = []
+                for item in data:
+                    if not isinstance(item, str):
+                        continue
+                    t = item.strip().lower()
+                    if not t:
+                        continue
+                    if not t.startswith("."):
+                        t = "." + t
+                    out.append(t)
+                return out or [".sql"]
+    except Exception:
+        pass
+
+    parts = [p.strip().lower() for p in s.replace(";", ",").split(",")]
+    out2: list[str] = []
+    for p in parts:
+        if not p:
+            continue
+        if not p.startswith("."):
+            p = "." + p
+        out2.append(p)
+    return out2 or [".sql"]
+
+
+def _project_script_extensions(proj: Project) -> list[str]:
+    return _parse_script_extensions(getattr(proj, "script_extensions", None))
+
+
+def _normalize_script_extensions_input(exts: list[str] | None) -> list[str]:
+    raw = exts or []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        t = item.strip().lower()
+        if not t:
+            continue
+        if not t.startswith("."):
+            t = "." + t
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out or [".sql"]
+
+
+def _list_files_in_dir(base_dir: Path, exts: list[str]) -> list[str]:
+    if not base_dir.exists():
+        return []
+    return [row.relative_path for row in list_workspace_files(base_dir, exts)]
 
 
 def _get_latest_version(script_id: str) -> Version | None:
@@ -402,6 +543,101 @@ def _unified_preview(a: str, b: str, limit_lines: int = 200) -> str:
         head.append(f"... (diff truncated, total {len(lines)} lines)\n")
         return "".join(head)
     return "".join(lines)
+
+
+def _split_keepends_text(data: bytes | None) -> tuple[str, list[str]]:
+    text = decode_sql_bytes(data or b"")
+    return text, text.splitlines(keepends=True)
+
+
+def _detect_text_encoding(*values: bytes | None) -> str:
+    for enc in ("utf-8-sig", "utf-8", "gbk", "latin-1"):
+        ok = True
+        for data in values:
+            if data is None:
+                continue
+            try:
+                data.decode(enc)
+            except UnicodeDecodeError:
+                ok = False
+                break
+        if ok:
+            return enc
+    return "utf-8"
+
+
+def _build_conflict_lines(local_text: str, remote_text: str, default_side: str) -> list[ConflictLineOut]:
+    import difflib
+
+    local_lines = local_text.splitlines()
+    remote_lines = remote_text.splitlines()
+    sm = difflib.SequenceMatcher(a=local_lines, b=remote_lines)
+    out: list[ConflictLineOut] = []
+    local_no = 1
+    remote_no = 1
+    idx = 0
+
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            local_no += i2 - i1
+            remote_no += j2 - j1
+            continue
+
+        a_chunk = local_lines[i1:i2]
+        b_chunk = remote_lines[j1:j2]
+        size = max(len(a_chunk), len(b_chunk))
+        for k in range(size):
+            a_text = a_chunk[k] if k < len(a_chunk) else ""
+            b_text = b_chunk[k] if k < len(b_chunk) else ""
+            out.append(
+                ConflictLineOut(
+                    index=idx,
+                    localNo=(local_no + k) if k < len(a_chunk) else None,
+                    remoteNo=(remote_no + k) if k < len(b_chunk) else None,
+                    localText=a_text,
+                    remoteText=b_text,
+                    selectedSide=default_side,
+                )
+            )
+            idx += 1
+
+        local_no += len(a_chunk)
+        remote_no += len(b_chunk)
+
+    return out
+
+
+def _merge_text_by_choices(local_text: str, remote_text: str, choices: list[str], default_side: str) -> str:
+    import difflib
+
+    local_lines = local_text.splitlines(keepends=True)
+    remote_lines = remote_text.splitlines(keepends=True)
+    local_compare = local_text.splitlines()
+    remote_compare = remote_text.splitlines()
+    sm = difflib.SequenceMatcher(a=local_compare, b=remote_compare)
+
+    out: list[str] = []
+    idx = 0
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            out.extend(local_lines[i1:i2])
+            continue
+
+        a_chunk = local_lines[i1:i2]
+        b_chunk = remote_lines[j1:j2]
+        size = max(len(a_chunk), len(b_chunk))
+        for k in range(size):
+            choice = choices[idx] if idx < len(choices) else default_side
+            choice = choice if choice in ("local", "remote") else default_side
+            if choice == "local":
+                if k < len(a_chunk):
+                    out.append(a_chunk[k])
+            else:
+                if k < len(b_chunk):
+                    out.append(b_chunk[k])
+            idx += 1
+
+    return "".join(out)
 
 
 def _summarize_files(results: list[FileStatus]) -> str:
@@ -515,6 +751,7 @@ def list_projects(current_user: CurrentUser):
             name=r.name,
             localWorkspacePath=r.local_workspace_path,
             remotePath=r.remote_path,
+            scriptExtensions=_project_script_extensions(r),
             createdAt=r.created_at,
         )
         for r in rows
@@ -524,11 +761,13 @@ def list_projects(current_user: CurrentUser):
 @api_router.post("/projects", response_model=ProjectOut)
 def create_project(body: ProjectCreate, current_user: CurrentUser):
     pid = str(uuid.uuid4())
+    exts = _normalize_script_extensions_input(body.scriptExtensions)
     p = Project(
         id=pid,
         name=body.name,
         local_workspace_path=body.localWorkspacePath,
         remote_path=body.remotePath,
+        script_extensions=json.dumps(exts, ensure_ascii=False),
     )
     with session_scope() as session:
         session.add(p)
@@ -539,6 +778,7 @@ def create_project(body: ProjectCreate, current_user: CurrentUser):
         name=p.name,
         localWorkspacePath=p.local_workspace_path,
         remotePath=p.remote_path,
+        scriptExtensions=_project_script_extensions(p),
         createdAt=p.created_at,
     )
 
@@ -562,6 +802,8 @@ def update_project(project_id: str, body: ProjectUpdate, current_user: CurrentUs
             p.local_workspace_path = body.localWorkspacePath
         if body.remotePath is not None:
             p.remote_path = body.remotePath
+        if body.scriptExtensions is not None:
+            p.script_extensions = json.dumps(_normalize_script_extensions_input(body.scriptExtensions), ensure_ascii=False)
         session.add(p)
         session.commit()
     _log(project_id, "project.update", "ok", "", actor=current_user)
@@ -570,6 +812,7 @@ def update_project(project_id: str, body: ProjectUpdate, current_user: CurrentUs
         name=p.name,
         localWorkspacePath=p.local_workspace_path,
         remotePath=p.remote_path,
+        scriptExtensions=_project_script_extensions(p),
         createdAt=p.created_at,
     )
 
@@ -584,15 +827,32 @@ def batch_delete_projects(body: ProjectBatchDeleteIn, current_user: CurrentUser)
 
 @api_router.post("/ftp/test")
 def ftp_test(body: FtpConfigIn, current_user: CurrentUser):
-    cfg = FtpConfig(
-        host=body.host,
-        port=body.port,
-        username=body.username,
-        password=body.password,
-        passive_mode=body.passiveMode,
-        remote_root=body.remoteRoot,
-        ftp_encoding=body.ftpEncoding,
-    )
+    if _normalize_connection_mode(body.connectionMode) != "ftp":
+        return {"ok": True, "pwd": "local://", "features": []}
+    with session_scope() as session:
+        if body.ftpProfileId:
+            prof = session.get(FtpProfile, body.ftpProfileId)
+            if not prof:
+                raise HTTPException(status_code=404, detail="ftp profile not found")
+            cfg = FtpConfig(
+                host=prof.host,
+                port=prof.port,
+                username=prof.username,
+                password=decrypt_text(prof.password_enc),
+                passive_mode=prof.passive_mode,
+                remote_root=prof.remote_root,
+                ftp_encoding=getattr(prof, "ftp_encoding", "auto") or "auto",
+            )
+        else:
+            cfg = FtpConfig(
+                host=body.host,
+                port=body.port,
+                username=body.username,
+                password=body.password,
+                passive_mode=body.passiveMode,
+                remote_root=body.remoteRoot,
+                ftp_encoding=body.ftpEncoding,
+            )
     try:
         result = test_connection(cfg)
         _log(None, "ftp.test", "ok", f"{body.host}:{body.port}", actor=current_user)
@@ -604,15 +864,30 @@ def ftp_test(body: FtpConfigIn, current_user: CurrentUser):
 
 @api_router.post("/ftp/browse", response_model=FtpBrowseOut)
 def ftp_browse(body: FtpConfigIn, current_user: CurrentUser, path: str = "/"):
-    cfg = FtpConfig(
-        host=body.host,
-        port=body.port,
-        username=body.username,
-        password=body.password,
-        passive_mode=body.passiveMode,
-        remote_root=body.remoteRoot,
-        ftp_encoding=body.ftpEncoding,
-    )
+    with session_scope() as session:
+        if body.ftpProfileId:
+            prof = session.get(FtpProfile, body.ftpProfileId)
+            if not prof:
+                raise HTTPException(status_code=404, detail="ftp profile not found")
+            cfg = FtpConfig(
+                host=prof.host,
+                port=prof.port,
+                username=prof.username,
+                password=decrypt_text(prof.password_enc),
+                passive_mode=prof.passive_mode,
+                remote_root=prof.remote_root,
+                ftp_encoding=getattr(prof, "ftp_encoding", "auto") or "auto",
+            )
+        else:
+            cfg = FtpConfig(
+                host=body.host,
+                port=body.port,
+                username=body.username,
+                password=body.password,
+                passive_mode=body.passiveMode,
+                remote_root=body.remoteRoot,
+                ftp_encoding=body.ftpEncoding,
+            )
     ftp = connect(cfg)
     try:
         root_norm = remote_join(cfg.remote_root)
@@ -643,9 +918,12 @@ def upsert_ftp_setting(project_id: str, body: FtpConfigIn, current_user: Current
     _get_project(project_id)
     sid = str(uuid.uuid4())
     enc = encrypt_text(body.password)
+    connection_mode = _normalize_connection_mode(body.connectionMode)
     with session_scope() as session:
         existing = session.exec(select(FtpSetting).where(FtpSetting.project_id == project_id)).first()
         if existing:
+            existing.connection_mode = connection_mode
+            existing.ftp_profile_id = body.ftpProfileId if connection_mode == "ftp" else None
             existing.host = body.host
             existing.port = body.port
             existing.username = body.username
@@ -659,6 +937,8 @@ def upsert_ftp_setting(project_id: str, body: FtpConfigIn, current_user: Current
                 FtpSetting(
                     id=sid,
                     project_id=project_id,
+                    ftp_profile_id=body.ftpProfileId if connection_mode == "ftp" else None,
+                    connection_mode=connection_mode,
                     host=body.host,
                     port=body.port,
                     username=body.username,
@@ -669,8 +949,10 @@ def upsert_ftp_setting(project_id: str, body: FtpConfigIn, current_user: Current
                 )
             )
         session.commit()
-    _log(project_id, "ftp.save", "ok", f"{body.host}:{body.port}", actor=current_user)
+    _log(project_id, f"{connection_mode}.save", "ok", f"{body.host}:{body.port}", actor=current_user)
     return FtpSettingOut(
+        connectionMode=connection_mode,
+        ftpProfileId=body.ftpProfileId if connection_mode == "ftp" else None,
         host=body.host,
         port=body.port,
         username=body.username,
@@ -682,16 +964,155 @@ def upsert_ftp_setting(project_id: str, body: FtpConfigIn, current_user: Current
 
 @api_router.get("/projects/{project_id}/ftp", response_model=FtpSettingFullOut)
 def get_ftp_setting(project_id: str, current_user: CurrentUser):
-    st = _get_ftp_setting(project_id)
-    return FtpSettingFullOut(
-        host=st.host,
-        port=st.port,
-        username=st.username,
-        password=decrypt_text(st.password_enc),
-        passiveMode=st.passive_mode,
-        remoteRoot=st.remote_root,
-        ftpEncoding=getattr(st, "ftp_encoding", "auto") or "auto",
+    with session_scope() as session:
+        st = session.exec(select(FtpSetting).where(FtpSetting.project_id == project_id)).first()
+        if not st:
+            raise HTTPException(status_code=400, detail="ftp setting not configured")
+        mode = _normalize_connection_mode(getattr(st, "connection_mode", "ftp"))
+        profile_id = getattr(st, "ftp_profile_id", None) if mode == "ftp" else None
+        if profile_id:
+            prof = session.get(FtpProfile, profile_id)
+            if not prof:
+                raise HTTPException(status_code=404, detail="ftp profile not found")
+            return FtpSettingFullOut(
+                connectionMode=mode,
+                ftpProfileId=profile_id,
+                host=prof.host,
+                port=prof.port,
+                username=prof.username,
+                password=decrypt_text(prof.password_enc),
+                passiveMode=prof.passive_mode,
+                remoteRoot=prof.remote_root,
+                ftpEncoding=getattr(prof, "ftp_encoding", "auto") or "auto",
+            )
+        return FtpSettingFullOut(
+            connectionMode=mode,
+            ftpProfileId=None,
+            host=st.host,
+            port=st.port,
+            username=st.username,
+            password=decrypt_text(st.password_enc),
+            passiveMode=st.passive_mode,
+            remoteRoot=st.remote_root,
+            ftpEncoding=getattr(st, "ftp_encoding", "auto") or "auto",
+        )
+
+
+@api_router.get("/ftp-profiles", response_model=list[FtpProfileOut])
+def list_ftp_profiles(current_user: CurrentUser):
+    with session_scope() as session:
+        rows = session.exec(select(FtpProfile).order_by(FtpProfile.created_at.desc())).all()
+    return [
+        FtpProfileOut(
+            id=r.id,
+            name=r.name,
+            host=r.host,
+            port=r.port,
+            username=r.username,
+            passiveMode=r.passive_mode,
+            remoteRoot=r.remote_root,
+            ftpEncoding=getattr(r, "ftp_encoding", "auto") or "auto",
+            createdAt=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+@api_router.get("/ftp-profiles/{profile_id}", response_model=FtpProfileFullOut)
+def get_ftp_profile(profile_id: str, current_user: CurrentUser):
+    with session_scope() as session:
+        prof = session.get(FtpProfile, profile_id)
+        if not prof:
+            raise HTTPException(status_code=404, detail="ftp profile not found")
+    return FtpProfileFullOut(
+        id=prof.id,
+        name=prof.name,
+        host=prof.host,
+        port=prof.port,
+        username=prof.username,
+        password=decrypt_text(prof.password_enc),
+        passiveMode=prof.passive_mode,
+        remoteRoot=prof.remote_root,
+        ftpEncoding=getattr(prof, "ftp_encoding", "auto") or "auto",
+        createdAt=prof.created_at,
     )
+
+
+@api_router.post("/ftp-profiles", response_model=FtpProfileOut)
+def create_ftp_profile(body: FtpProfileIn, current_user: CurrentUser):
+    pid = str(uuid.uuid4())
+    prof = FtpProfile(
+        id=pid,
+        name=body.name,
+        host=body.host,
+        port=body.port,
+        username=body.username,
+        password_enc=encrypt_text(body.password),
+        passive_mode=body.passiveMode,
+        remote_root=body.remoteRoot,
+        ftp_encoding=body.ftpEncoding,
+    )
+    with session_scope() as session:
+        session.add(prof)
+        session.commit()
+    _log(None, "ftp_profile.create", "ok", body.name, actor=current_user)
+    return FtpProfileOut(
+        id=prof.id,
+        name=prof.name,
+        host=prof.host,
+        port=prof.port,
+        username=prof.username,
+        passiveMode=prof.passive_mode,
+        remoteRoot=prof.remote_root,
+        ftpEncoding=getattr(prof, "ftp_encoding", "auto") or "auto",
+        createdAt=prof.created_at,
+    )
+
+
+@api_router.put("/ftp-profiles/{profile_id}", response_model=FtpProfileOut)
+def update_ftp_profile(profile_id: str, body: FtpProfileIn, current_user: CurrentUser):
+    with session_scope() as session:
+        prof = session.get(FtpProfile, profile_id)
+        if not prof:
+            raise HTTPException(status_code=404, detail="ftp profile not found")
+        prof.name = body.name
+        prof.host = body.host
+        prof.port = body.port
+        prof.username = body.username
+        prof.password_enc = encrypt_text(body.password)
+        prof.passive_mode = body.passiveMode
+        prof.remote_root = body.remoteRoot
+        prof.ftp_encoding = body.ftpEncoding
+        session.add(prof)
+        session.commit()
+    _log(None, "ftp_profile.update", "ok", f"profileId={profile_id}", actor=current_user)
+    return FtpProfileOut(
+        id=prof.id,
+        name=prof.name,
+        host=prof.host,
+        port=prof.port,
+        username=prof.username,
+        passiveMode=prof.passive_mode,
+        remoteRoot=prof.remote_root,
+        ftpEncoding=getattr(prof, "ftp_encoding", "auto") or "auto",
+        createdAt=prof.created_at,
+    )
+
+
+@api_router.delete("/ftp-profiles/{profile_id}")
+def delete_ftp_profile(profile_id: str, current_user: CurrentUser):
+    with session_scope() as session:
+        prof = session.get(FtpProfile, profile_id)
+        if not prof:
+            raise HTTPException(status_code=404, detail="ftp profile not found")
+        refs = session.exec(select(FtpSetting).where(FtpSetting.ftp_profile_id == profile_id)).all()
+        for st in refs:
+            st.ftp_profile_id = None
+            session.add(st)
+        session.delete(prof)
+        session.commit()
+    _log(None, "ftp_profile.delete", "ok", f"profileId={profile_id}", actor=current_user)
+    return {"ok": True}
 
 
 @api_router.post("/fs/pick-directory", response_model=PickDirectoryOut)
@@ -710,7 +1131,8 @@ def list_project_scripts(project_id: str, current_user: CurrentUser):
     if not workspace_dir.exists():
         raise HTTPException(status_code=400, detail="local workspace path does not exist")
 
-    files = list_workspace_sql(workspace_dir)
+    exts = _project_script_extensions(proj)
+    files = list_workspace_files(workspace_dir, exts)
     out: list[ScriptOut] = []
     for f in files:
         s = upsert_script(project_id, f.relative_path)
@@ -811,8 +1233,9 @@ def version_content(version_id: str, current_user: CurrentUser):
     }
 
 
+@api_router.post("/versions/{version_id}/rollback-local", response_model=RollbackOut)
 @api_router.post("/versions/{version_id}/rollback-to-ftp", response_model=RollbackOut)
-def rollback_version_to_ftp(version_id: str, body: RollbackIn, current_user: CurrentUser):
+def rollback_version_to_local(version_id: str, body: RollbackIn, current_user: CurrentUser):
     with session_scope() as session:
         target = session.get(Version, version_id)
         if not target:
@@ -824,23 +1247,14 @@ def rollback_version_to_ftp(version_id: str, body: RollbackIn, current_user: Cur
         if not proj:
             raise HTTPException(status_code=404, detail="project not found")
 
-    st = _get_ftp_setting(proj.id)
-    cfg = _setting_to_cfg(st)
     workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
     if not workspace_dir.exists():
         raise HTTPException(status_code=400, detail="local workspace path does not exist")
 
     data = read_snapshot(target)
     workspace_path = str((workspace_dir / script.relative_path).resolve())
-    remote_dir = _resolve_project_remote_dir(cfg, proj.remote_path)
-    remote_path = remote_join(remote_dir, script.relative_path)
-
-    ftp = None
     try:
         _write_local_bytes(workspace_dir, script.relative_path, data)
-        ftp = connect(cfg)
-        upload_bytes(ftp, remote_path, data)
-
         latest = _get_latest_version(script.id)
         created_version = None
         if not latest or sha256_hex(data) != latest.content_hash:
@@ -854,29 +1268,22 @@ def rollback_version_to_ftp(version_id: str, body: RollbackIn, current_user: Cur
             ).version
 
         detail = (
-            f"{script.relative_path} rollbackTo={target.version_no} remote={remote_path} "
+            f"{script.relative_path} rollbackTo={target.version_no} workspacePath={workspace_path} "
             f"createdVersion={created_version.version_no if created_version else '-'}"
         )
-        _log(proj.id, "version.rollback.publish", "ok", detail, actor=current_user)
+        _log(proj.id, "version.rollback.local", "ok", detail, actor=current_user)
         return RollbackOut(
             ok=True,
             targetVersionId=target.id,
             targetVersionNo=target.version_no,
-            publishedRemotePath=remote_path,
             workspacePath=workspace_path,
             createdVersionId=created_version.id if created_version else None,
             createdVersionNo=created_version.version_no if created_version else None,
-            message=f"已回退到 {target.version_no} 并发布到 FTP",
+            message=f"已回退到 {target.version_no}，仅更新本地工作区",
         )
     except Exception as e:
-        _log(proj.id, "version.rollback.publish", "error", f"versionId={version_id} error={e}", actor=current_user)
+        _log(proj.id, "version.rollback.local", "error", f"versionId={version_id} error={e}", actor=current_user)
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        if ftp:
-            try:
-                ftp.quit()
-            except Exception:
-                ftp.close()
 
 
 @api_router.get("/logs")
@@ -934,46 +1341,83 @@ def logs(
 @api_router.post("/projects/{project_id}/pull", response_model=PullPushOut)
 def pull_from_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
     proj = _get_project(project_id)
-    st = _get_ftp_setting(project_id)
-    cfg = _setting_to_cfg(st)
+    with session_scope() as session:
+        st = session.exec(select(FtpSetting).where(FtpSetting.project_id == project_id)).first()
+        if not st:
+            raise HTTPException(status_code=400, detail="ftp setting not configured")
+        mode = _normalize_connection_mode(getattr(st, "connection_mode", "ftp"))
+        cfg = _setting_to_cfg(session, st) if mode == "ftp" else None
+    exts = _project_script_extensions(proj)
 
     workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
     if not workspace_dir.exists():
         raise HTTPException(status_code=400, detail="local workspace path does not exist")
 
-    remote_dir = _resolve_project_remote_dir(cfg, proj.remote_path)
-    log_info(
-        "ftp.pull.start "
-        f"projectId={project_id} remoteRoot={cfg.remote_root} projectRemote={proj.remote_path} "
-        f"resolvedRemoteDir={remote_dir} dryRun={body.dryRun} overwrite={body.overwrite}"
-    )
-
-    ftp = connect(cfg)
     try:
-        rels = list_sql_files(ftp, remote_dir)
+        if mode == "local":
+            remote_dir_path = _resolve_project_local_dir(proj)
+            if not remote_dir_path.exists():
+                raise HTTPException(status_code=400, detail="local target path does not exist")
+            remote_dir = str(remote_dir_path)
+            rels = _list_files_in_dir(remote_dir_path, exts)
+        else:
+            if not cfg:
+                raise HTTPException(status_code=400, detail="ftp setting not configured")
+            remote_dir = _resolve_project_remote_dir(cfg, proj.remote_path)
+            log_info(
+                "ftp.pull.start "
+                f"projectId={project_id} remoteRoot={cfg.remote_root} projectRemote={proj.remote_path} "
+                f"resolvedRemoteDir={remote_dir} dryRun={body.dryRun} overwrite={body.overwrite}"
+            )
+            ftp = connect(cfg)
+            try:
+                rels = list_sql_files(ftp, remote_dir, exts)
+            except Exception:
+                try:
+                    ftp.quit()
+                except Exception:
+                    ftp.close()
+                raise
+
         results: list[FileStatus] = []
 
         for rel in rels:
             if body.paths and rel not in body.paths:
                 continue
 
-            remote_path = remote_join(remote_dir, rel)
-            remote_bytes = download_bytes(ftp, remote_path)
+            if mode == "local":
+                remote_path = str((remote_dir_path / rel).resolve())
+                remote_bytes = _read_local_bytes(remote_dir_path, rel)
+                if remote_bytes is None:
+                    continue
+            else:
+                remote_path = remote_join(remote_dir, rel)
+                remote_bytes = download_bytes(ftp, remote_path)
             local_bytes = _read_local_bytes(workspace_dir, rel)
             local_exists = local_bytes is not None
             remote_exists = True
 
+            local_text = decode_sql_bytes(local_bytes or b"")
+            remote_text = decode_sql_bytes(remote_bytes)
             status_name = "new" if not local_exists else ("unchanged" if local_bytes == remote_bytes else "modified")
             diff_preview = None
+            conflict_lines: list[ConflictLineOut] = []
             if status_name in ("modified", "new"):
-                diff_preview = _unified_preview(
-                    decode_sql_bytes(local_bytes or b""),
-                    decode_sql_bytes(remote_bytes),
-                )
+                diff_preview = _unified_preview(local_text, remote_text)
+            if status_name == "modified":
+                conflict_lines = _build_conflict_lines(local_text, remote_text, "remote")
 
             if not body.dryRun:
-                if status_name == "new" or (status_name == "modified" and body.overwrite):
+                if status_name == "new":
                     _write_local_bytes(workspace_dir, rel, remote_bytes)
+                elif status_name == "modified":
+                    selections = (body.conflictSelections or {}).get(rel)
+                    if conflict_lines and selections:
+                        merged_text = _merge_text_by_choices(local_text, remote_text, selections, "remote")
+                        merged_bytes = merged_text.encode(_detect_text_encoding(local_bytes, remote_bytes))
+                        _write_local_bytes(workspace_dir, rel, merged_bytes)
+                    elif body.overwrite:
+                        _write_local_bytes(workspace_dir, rel, remote_bytes)
 
             results.append(
                 FileStatus(
@@ -982,48 +1426,59 @@ def pull_from_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
                     localExists=local_exists,
                     remoteExists=remote_exists,
                     diffPreview=diff_preview,
+                    conflictCount=len(conflict_lines),
+                    conflictLines=conflict_lines,
                 )
             )
 
-        _log(project_id, "ftp.pull", "ok", f"dryRun={body.dryRun} overwrite={body.overwrite} {_summarize_files(results)}", actor=current_user)
+        _log(project_id, f"{mode}.pull", "ok", f"dryRun={body.dryRun} overwrite={body.overwrite} {_summarize_files(results)}", actor=current_user)
         return PullPushOut(files=results)
     except Exception as e:
-        _log(project_id, "ftp.pull", "error", str(e), actor=current_user)
+        _log(project_id, f"{mode}.pull", "error", str(e), actor=current_user)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        try:
-            ftp.quit()
-        except Exception:
-            ftp.close()
+        if mode == "ftp" and "ftp" in locals():
+            try:
+                ftp.quit()
+            except Exception:
+                ftp.close()
 
 
 @api_router.post("/projects/{project_id}/push", response_model=PullPushOut)
 def push_to_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
     proj = _get_project(project_id)
-    st = _get_ftp_setting(project_id)
-    cfg = _setting_to_cfg(st)
+    with session_scope() as session:
+        st = session.exec(select(FtpSetting).where(FtpSetting.project_id == project_id)).first()
+        if not st:
+            raise HTTPException(status_code=400, detail="ftp setting not configured")
+        mode = _normalize_connection_mode(getattr(st, "connection_mode", "ftp"))
+        cfg = _setting_to_cfg(session, st) if mode == "ftp" else None
+    exts = _project_script_extensions(proj)
 
     workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
     if not workspace_dir.exists():
         raise HTTPException(status_code=400, detail="local workspace path does not exist")
 
-    remote_dir = _resolve_project_remote_dir(cfg, proj.remote_path)
-    log_info(
-        "ftp.push.start "
-        f"projectId={project_id} remoteRoot={cfg.remote_root} projectRemote={proj.remote_path} "
-        f"resolvedRemoteDir={remote_dir} dryRun={body.dryRun} overwrite={body.overwrite}"
-    )
-
     local_files: list[str] = []
-    for p in workspace_dir.rglob("*.sql"):
-        if p.is_file():
-            rel = str(p.relative_to(workspace_dir)).replace("\\", "/")
-            local_files.append(rel)
+    for row in list_workspace_files(workspace_dir, exts):
+        local_files.append(row.relative_path)
     local_files.sort()
 
-    ftp = connect(cfg)
     try:
-        remote_rels = set(list_sql_files(ftp, remote_dir))
+        if mode == "local":
+            remote_dir_path = _resolve_project_local_dir(proj)
+            remote_rels = set(_list_files_in_dir(remote_dir_path, exts))
+        else:
+            if not cfg:
+                raise HTTPException(status_code=400, detail="ftp setting not configured")
+            remote_dir = _resolve_project_remote_dir(cfg, proj.remote_path)
+            log_info(
+                "ftp.push.start "
+                f"projectId={project_id} remoteRoot={cfg.remote_root} projectRemote={proj.remote_path} "
+                f"resolvedRemoteDir={remote_dir} dryRun={body.dryRun} overwrite={body.overwrite}"
+            )
+            ftp = connect(cfg)
+            remote_rels = set(list_sql_files(ftp, remote_dir, exts))
         results: list[FileStatus] = []
 
         for rel in local_files:
@@ -1034,27 +1489,55 @@ def push_to_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
             if local_bytes is None:
                 continue
 
-            remote_path = remote_join(remote_dir, rel)
+            if mode == "local":
+                remote_path = str((remote_dir_path / rel).resolve())
+            else:
+                remote_path = remote_join(remote_dir, rel)
             remote_exists = rel in remote_rels
             remote_bytes = b""
             if remote_exists:
                 try:
-                    remote_bytes = download_bytes(ftp, remote_path)
+                    remote_bytes = _read_local_bytes(remote_dir_path, rel) if mode == "local" else download_bytes(ftp, remote_path)
+                    if remote_bytes is None:
+                        remote_exists = False
+                        remote_bytes = b""
                 except Exception:
                     remote_exists = False
                     remote_bytes = b""
 
+            local_text = decode_sql_bytes(local_bytes)
+            remote_text = decode_sql_bytes(remote_bytes)
             status_name = "new" if not remote_exists else ("unchanged" if local_bytes == remote_bytes else "modified")
             diff_preview = None
+            conflict_lines: list[ConflictLineOut] = []
             if status_name in ("modified", "new"):
-                diff_preview = _unified_preview(
-                    decode_sql_bytes(remote_bytes),
-                    decode_sql_bytes(local_bytes),
-                )
+                diff_preview = _unified_preview(remote_text, local_text)
+            if status_name == "modified":
+                conflict_lines = _build_conflict_lines(local_text, remote_text, "local")
 
             if not body.dryRun:
-                if status_name == "new" or (status_name == "modified" and body.overwrite):
-                    upload_bytes(ftp, remote_path, local_bytes)
+                if status_name == "new":
+                    if mode == "local":
+                        remote_dir_path.mkdir(parents=True, exist_ok=True)
+                        _write_local_bytes(remote_dir_path, rel, local_bytes)
+                    else:
+                        upload_bytes(ftp, remote_path, local_bytes)
+                elif status_name == "modified":
+                    selections = (body.conflictSelections or {}).get(rel)
+                    if conflict_lines and selections:
+                        merged_text = _merge_text_by_choices(local_text, remote_text, selections, "local")
+                        merged_bytes = merged_text.encode(_detect_text_encoding(local_bytes, remote_bytes))
+                        if mode == "local":
+                            remote_dir_path.mkdir(parents=True, exist_ok=True)
+                            _write_local_bytes(remote_dir_path, rel, merged_bytes)
+                        else:
+                            upload_bytes(ftp, remote_path, merged_bytes)
+                    elif body.overwrite:
+                        if mode == "local":
+                            remote_dir_path.mkdir(parents=True, exist_ok=True)
+                            _write_local_bytes(remote_dir_path, rel, local_bytes)
+                        else:
+                            upload_bytes(ftp, remote_path, local_bytes)
 
             results.append(
                 FileStatus(
@@ -1063,16 +1546,19 @@ def push_to_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
                     localExists=True,
                     remoteExists=remote_exists,
                     diffPreview=diff_preview,
+                    conflictCount=len(conflict_lines),
+                    conflictLines=conflict_lines,
                 )
             )
 
-        _log(project_id, "ftp.push", "ok", f"dryRun={body.dryRun} overwrite={body.overwrite} {_summarize_files(results)}", actor=current_user)
+        _log(project_id, f"{mode}.push", "ok", f"dryRun={body.dryRun} overwrite={body.overwrite} {_summarize_files(results)}", actor=current_user)
         return PullPushOut(files=results)
     except Exception as e:
-        _log(project_id, "ftp.push", "error", str(e), actor=current_user)
+        _log(project_id, f"{mode}.push", "error", str(e), actor=current_user)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
-        try:
-            ftp.quit()
-        except Exception:
-            ftp.close()
+        if mode == "ftp" and "ftp" in locals():
+            try:
+                ftp.quit()
+            except Exception:
+                ftp.close()

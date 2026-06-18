@@ -3,9 +3,11 @@ import { BrowserRouter as Router, Navigate, Route, Routes } from "react-router-d
 
 import { AppShell } from "@/components/AppShell";
 import { useI18n } from "@/i18n";
-import Dashboard from "@/pages/Dashboard";
 import Compare from "@/pages/Compare";
+import CommitsPage from "@/pages/Commits";
+import ConnectionsPage from "@/pages/Connections";
 import LoginPage from "@/pages/Login";
+import ProjectsPage from "@/pages/Projects";
 import RegisterPage from "@/pages/Register";
 import SettingsPage from "@/pages/Settings";
 import ScriptDetail from "@/pages/ScriptDetail";
@@ -23,7 +25,7 @@ function RequireAuth() {
 
 function GuestOnly({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
-  return user ? <Navigate to="/" replace /> : <>{children}</>;
+  return user ? <Navigate to="/projects" replace /> : <>{children}</>;
 }
 
 export default function App() {
@@ -59,7 +61,10 @@ export default function App() {
           }
         />
         <Route element={<RequireAuth />}>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<Navigate to="/projects" replace />} />
+          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/commits" element={<CommitsPage />} />
+          <Route path="/connections" element={<ConnectionsPage />} />
           <Route path="/scripts/:scriptId" element={<ScriptDetail />} />
           <Route path="/compare" element={<Compare />} />
           <Route path="/settings" element={<SettingsPage />} />

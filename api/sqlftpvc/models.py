@@ -17,6 +17,7 @@ class Project(SQLModel, table=True):
     name: str
     local_workspace_path: str
     remote_path: str
+    script_extensions: str = Field(default='[".sql"]')
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -67,6 +68,8 @@ class FtpSetting(SQLModel, table=True):
 
     id: str = Field(primary_key=True)
     project_id: str = Field(index=True)
+    ftp_profile_id: Optional[str] = Field(default=None, index=True)
+    connection_mode: str = Field(default="ftp")
     host: str
     port: int
     username: str
@@ -74,6 +77,21 @@ class FtpSetting(SQLModel, table=True):
     passive_mode: bool
     remote_root: str
     ftp_encoding: str = Field(default="auto")
+
+
+class FtpProfile(SQLModel, table=True):
+    __tablename__ = "ftp_profiles"
+
+    id: str = Field(primary_key=True)
+    name: str = Field(index=True)
+    host: str
+    port: int
+    username: str
+    password_enc: str
+    passive_mode: bool
+    remote_root: str
+    ftp_encoding: str = Field(default="auto")
+    created_at: str = Field(default_factory=now_iso, index=True)
 
 
 class EventLog(SQLModel, table=True):

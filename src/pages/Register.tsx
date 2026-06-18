@@ -20,7 +20,7 @@ export default function RegisterPage() {
 
   useEffect(() => {
     if (user) {
-      nav("/", { replace: true });
+      nav("/projects", { replace: true });
     }
   }, [nav, user]);
 
@@ -34,7 +34,7 @@ export default function RegisterPage() {
     setError(null);
     try {
       await register(username.trim(), password);
-      nav("/", { replace: true });
+      nav("/projects", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : tx("注册失败", "Registration failed"));
     }

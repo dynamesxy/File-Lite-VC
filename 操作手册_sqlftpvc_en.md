@@ -1,207 +1,160 @@
-# `sqlftpvc` Operation Guide (Intranet Edition)
+# File-Lite-VC Operation Guide (Intranet)
 
-This tool manages SQL script versions in an intranet environment. It stores version snapshots locally, provides visual diff views, and synchronizes SQL files through FTP pull and push operations.
+File-Lite-VC is a lightweight file management tool for intranet environments:
+- Local version snapshots + visual Diff
+- Sync modes: FTP (pull/push) or Local Directory (pull/push to a target folder)
+- Line-by-line conflict resolver (choose Local/Remote per conflict line)
+- Rollback is **local-workspace only** (remote is never rolled back)
 
-## 1. Quick Start
+Web UI: `http://127.0.0.1:8848/`
+
+Note:
+- Recommended new startup command: `python -m file_lite_vc`
+- The legacy command `python -m sqlftpvc` is still supported for compatibility
+
+---
+
+## 1. Quick Start (Target Machine)
 
 ### 1.1 No-Python Package (Recommended)
-Use `sqlftpvc-no-python.zip`:
-1. Copy the package to the target intranet machine.
-2. Extract it to any directory. Avoid protected system directories such as `C:\Program Files`.
-3. Run `sqlftpvc.exe` directly.
-4. Open `http://127.0.0.1:8848/` in the browser.
+Use `release/File-Lite-VC-no-python.zip`:
+1. Copy it to the target intranet machine
+2. Extract to any directory (avoid protected directories like `C:\Program Files`)
+3. Windows: run `run.bat` or double-click `File-Lite-VC.exe`
+4. Open `http://127.0.0.1:8848/`
 
-If the default port is occupied, set a custom port before launching:
-
+If the port is occupied:
 ```bat
-set SQLFTPVC_PORT=8850
-sqlftpvc.exe
+set FILE_LITE_VC_PORT=8850
+File-Lite-VC.exe
 ```
 
-### 1.2 Use Local `.venv` (Target Machine Has Python)
-In the project root directory that contains `api\` and `dist\`, run:
+### 1.2 Source / Unpackaged (Target Has Python)
+In the repo root (contains `api\` and `dist\`):
 
 CMD:
-
 ```bat
 call .venv\Scripts\activate.bat
 set PYTHONPATH=%cd%\api
-python -m sqlftpvc
+python -m file_lite_vc
 ```
 
 PowerShell:
-
 ```powershell
 .\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH = "$pwd\api"
-python -m sqlftpvc
+python -m file_lite_vc
 ```
 
-Then open `http://127.0.0.1:8848/`.
+---
 
-## 2. Core Concepts
+## 2. After Git Pull: How to Run (Dev/Build Machine)
 
-### 2.1 Project
-A project is a set of configuration values:
-- Local workspace path: the local folder that stores `.sql` files
-- FTP project directory: the target remote directory
+### 2.1 Requirements
+- Node.js: 18+ recommended
+- Python: 3.10+ recommended
 
-After a project is created, the tool scans `.sql` files from the local workspace and maintains:
-- Script list
-- Version history
-- Diff comparison
-
-### 2.2 FTP Configuration (`remoteRoot` + project directory)
-FTP configuration has two layers:
-- `remoteRoot`: the root directory configured in FTP settings, for example `/` or `/delivery/database`
-- Project directory (`Project.remotePath`): for example `projectA/scripts` or `/projectA/scripts`
-
-The final remote path is built by joining `remoteRoot` and `remotePath`.
-
-## 3. Recommended First-Time Workflow
-
-### 3.1 Configure FTP First
-Go to `Settings`:
-1. Fill in Host, Port, Username, and Password.
-2. Passive mode is usually recommended in intranet environments.
-3. Set `remoteRoot` to the root directory you want the tool to enter.
-4. Set FTP filename encoding to `Auto` by default. If Chinese directory names show `550` or garbled text, try `GBK`.
-5. Click `Test Connection`.
-6. Click `Browse Directories and Bind Project` to select a folder and bind it directly to the current project.
-7. Or click `Save to Current Project` if you only want to save the FTP settings.
-
-If connection testing succeeds but pull or upload still fails, review the remote directory rules in section 4.
-
-### 3.2 Create a Project
-Go to `Dashboard` > `Projects`:
-1. Click `Create`.
-2. Fill in:
-   - Project name
-   - Local workspace path
-   - FTP remote directory
-3. Click `Create`.
-4. The page shows a success message and switches to the new project automatically.
-
-### 3.3 Pull From FTP to Local
-1. Make sure a current project is selected.
-2. Click `Pull` to preview differences.
-3. Confirm and run the pull.
-
-### 3.4 Commit a Version
-1. In the script list, click `Commit Version` on a script with changes.
-2. Enter a commit message.
-3. A new version number is generated, for example `v20260622-xy-001`.
-
-### 3.5 View Versions and Diff
-1. Open `Versions & Compare`.
-2. Choose two versions, or choose `Workspace vs Version`.
-3. Review the difference summary and line-by-line comparison.
-
-### 3.6 Upload From Local to FTP
-1. Click `Upload` to preview differences.
-2. Confirm and run the upload.
-
-## 4. Remote Directory Rules
-
-### 4.1 Do Not Use URL-Encoded Paths
-FTP paths are not URLs. Do not enter values such as `%E4%B8%AD%E6%96%87`.
-
-Correct examples:
-- `remoteRoot`: `/delivery/database`
-- Project directory: `projectA/scripts`
-
-If you only have a URL-encoded string, decode it first:
-
+### 2.2 Install Dependencies
+Frontend:
 ```powershell
-[System.Uri]::UnescapeDataString("%E4%BA%A4%E4%BB%98/%E6%95%B0%E6%8D%AE%E5%BA%93")
+npm install
 ```
 
-### 4.2 Chinese Directory Issues
-FTP filename encoding depends on the FTP server:
-- Most modern servers support UTF-8
-- Some legacy intranet servers still use GBK
-
-If connection testing works but entering or listing Chinese directories fails, force GBK before startup:
-
-CMD:
-
-```bat
-set SQLFTPVC_FTP_ENCODING=gbk
-sqlftpvc.exe
-```
-
-PowerShell:
-
+Backend runtime venv (`.venv`):
 ```powershell
-$env:SQLFTPVC_FTP_ENCODING="gbk"
-.\sqlftpvc.exe
+python -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\python -m pip install -r api\requirements.txt
 ```
 
-## 5. Project Management
+### 2.3 Start (Frontend & Backend)
+Backend:
+```powershell
+$env:PYTHONPATH="$pwd\api"
+.\.venv\Scripts\python -m file_lite_vc
+```
 
-### 5.1 Project List
-The top area of `Dashboard` shows the project list:
-- Multi-select is supported
-- Batch delete is supported
-- Each project supports edit and delete
-- Click a project name to switch the current project
+Frontend:
+```powershell
+npm run dev
+```
 
-### 5.2 Edit Project
-Click `Edit` on a project row:
-- Saving shows a success message
-- The current script list refreshes automatically
+---
 
-### 5.3 Delete Project
-Deleting a project removes only local metadata and snapshots managed by this tool. It does not delete your real local SQL files.
+## 3. Packaging
 
-## 6. Troubleshooting
+Script included in this repo:
+- `package_release_no_python.ps1` → `release/File-Lite-VC-no-python.zip`
 
-### 6.1 Connection Test Works But Pull or Upload Fails
+Run at repo root:
+```powershell
+powershell -ExecutionPolicy Bypass -File package_release_no_python.ps1
+```
+
+---
+
+## 4. How to Use the Web UI
+
+Navigation: **Projects / Commits / Connections / Settings**.
+
+### 4.1 Connections
+FTP Profiles:
+1. Go to `Connections`
+2. Click `New` and fill Host/Port/User/Password/remoteRoot/Encoding
+3. Select a profile and click `Test Connection`
+4. Click `Save to Current Project` to bind it to the current project
+
+Local Directory mode:
+1. Switch to `Local Directory`
+2. Click `Choose Folder` to select an absolute local target directory
+3. Click `Save`
+
+### 4.2 Projects
+When creating a project, choose a connection type:
+- Local Directory: choose an absolute local target directory during creation
+- FTP: select an FTP Profile; project `remotePath` is optional
+
+Workspace and file types:
+- Local workspace path: the folder to scan scripts/files
+- Built-in file types `.sql/.java/.vue/.js`, plus custom extensions
+
+### 4.3 Commits
+Sync (Pull/Push):
+1. Select a current project
+2. Click `Pull` or `Push` to preview changes, then apply
+3. If conflicts exist, resolve them line-by-line (choose Local/Remote per line), then apply
+
+Commit versions:
+- Commit a single script, or multi-select and commit with one message
+
+### 4.4 Versions & Compare (Diff)
+- Compare any two versions
+- Compare “Workspace vs Version”
+
+### 4.5 Rollback (Local Only)
+- Rollback updates the local workspace file only
+- Remote (FTP / local target directory) is not rolled back
+
+---
+
+## 5. Troubleshooting
+
+### 5.1 Test works, but pull/push fails
 Check:
-- Whether `remoteRoot` is correct
-- Whether the project `remotePath` is correct
-- Whether the FTP encoding should be switched to `GBK`
+- whether `remoteRoot` is correct and permitted
+- whether project `remotePath` is correct (relative to `remoteRoot` or absolute starting with `/`)
+- Chinese directory issues: try `GBK` in “FTP Filename Encoding”
 
-### 6.2 Port Occupied
-
-```bat
-set SQLFTPVC_PORT=8850
-sqlftpvc.exe
-```
-
-### 6.3 `exe` Closes Immediately
-Capture logs:
-
-```bat
-sqlftpvc.exe > out.txt 2>&1
-type out.txt
-```
-
-The tool also tries to write a crash log to:
-`%USERPROFILE%\.sqlftpvc\crash.log`
-
-### 6.4 Runtime Log File
-The tool writes a real-time runtime log:
+### 5.2 Logs
+Runtime log in the working directory:
 - `sqlftpvc-runtime.log`
 
-If you run the no-Python package, the log file is in the same directory as `sqlftpvc.exe`.
+Crash log (if any):
+- `%USERPROFILE%\.sqlftpvc\crash.log`
 
-The log records:
-- Service startup
-- Project create, edit, and delete
-- FTP connection start and success
-- FTP directory switching and listing
-- FTP upload and download
-- Detailed error messages
-
-### 6.5 Troubleshooting FTP 550
-Typical symptoms:
-- FTP root works
-- A deeper project directory fails with `550`
-
-Recommended checks:
-1. Review `sqlftpvc-runtime.log`
-2. Confirm the path is not URL-encoded
-3. Try `SQLFTPVC_FTP_ENCODING=gbk`
-4. Make sure `remoteRoot` and project directory are not duplicated
-5. Ask the FTP administrator to verify `CWD`, `LIST`, `RETR`, and `STOR` permissions for the account
+### 5.3 `exe` exits immediately
+Capture stdout/stderr:
+```bat
+File-Lite-VC.exe > out.txt 2>&1
+type out.txt
+```

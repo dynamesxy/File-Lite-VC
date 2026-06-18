@@ -1,17 +1,16 @@
-import { FolderGit2, LogOut, Settings } from "lucide-react";
-import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useState, type ReactNode } from "react";
-
-import { LanguageToggle } from "@/components/LanguageToggle";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { FolderGit2, GitCommit, Plug, Settings } from "lucide-react";
+import { Link, Outlet, useLocation } from "react-router-dom";
+import { useEffect, type ReactNode } from "react";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/store/appStore";
-import { useAuthStore } from "@/store/authStore";
 
 function NavItem({ to, label, icon }: { to: string; label: string; icon: ReactNode }) {
   const loc = useLocation();
-  const active = loc.pathname === to;
+  const active =
+    loc.pathname === to ||
+    (to !== "/" && loc.pathname.startsWith(`${to}/`)) ||
+    (to === "/commits" && (loc.pathname.startsWith("/scripts/") || loc.pathname.startsWith("/compare")));
   return (
     <Link
       to={to}
@@ -29,30 +28,18 @@ function NavItem({ to, label, icon }: { to: string; label: string; icon: ReactNo
 export function AppShell() {
   const { tx } = useI18n();
   const { projects, activeProjectId, setActiveProjectId, refreshProjects } = useAppStore();
-  const { user, logout } = useAuthStore();
-  const nav = useNavigate();
-  const [logoutBusy, setLogoutBusy] = useState(false);
 
   useEffect(() => {
     refreshProjects();
   }, [refreshProjects]);
-
-  async function handleLogout() {
-    setLogoutBusy(true);
-    try {
-      await logout();
-      nav("/login", { replace: true });
-    } finally {
-      setLogoutBusy(false);
-    }
-  }
 
   return (
     <div className="min-h-screen bg-white">
       <div className="mx-auto grid max-w-[1440px] grid-cols-[260px_1fr] gap-0">
         <aside className="min-h-screen border-r border-zinc-200 bg-white px-3 py-4">
           <div className="px-2">
-            <div className="text-sm font-semibold text-zinc-900">SQL FTP VC</div>
+            <div className="text-sm font-semibold text-zinc-900">File-Lite-VC</div>
+            <div className="mt-0.5 text-xs text-zinc-500">{tx("轻量级的文件管理工具", "Lightweight file management tool")}</div>
             <div className="mt-3">
               <div className="text-xs text-zinc-500">{tx("当前项目", "Current Project")}</div>
               <select
@@ -71,38 +58,11 @@ export function AppShell() {
           </div>
 
           <nav className="mt-4 space-y-1 px-1">
-            <NavItem to="/" label={tx("项目工作台", "Dashboard")} icon={<FolderGit2 className="h-4 w-4" />} />
-            <NavItem to="/settings" label={tx("连接与设置", "Settings")} icon={<Settings className="h-4 w-4" />} />
+            <NavItem to="/projects" label={tx("项目", "Projects")} icon={<FolderGit2 className="h-4 w-4" />} />
+            <NavItem to="/commits" label={tx("提交", "Commits")} icon={<GitCommit className="h-4 w-4" />} />
+            <NavItem to="/connections" label={tx("连接", "Connections")} icon={<Plug className="h-4 w-4" />} />
+            <NavItem to="/settings" label={tx("设置", "Settings")} icon={<Settings className="h-4 w-4" />} />
           </nav>
-
-          <div className="mt-6 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-3">
-            <div className="text-xs text-zinc-500">{tx("当前账号", "Current User")}</div>
-            <div className="mt-1 text-sm font-medium text-zinc-900">{user?.username ?? "-"}</div>
-            <button
-              className="mt-3 inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={logoutBusy}
-              onClick={() => void handleLogout()}
-              type="button"
-            >
-              <LogOut className="h-4 w-4" />
-              {logoutBusy ? tx("退出中...", "Signing out...") : tx("退出登录", "Sign Out")}
-            </button>
-          </div>
-
-          <div className="mt-6 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-3">
-            <div className="text-xs text-zinc-500">{tx("外观与语言", "Appearance & Language")}</div>
-            <div className="mt-3 flex items-stretch">
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-                <div className="text-xs text-zinc-500">{tx("主题", "Theme")}</div>
-                <ThemeToggle />
-              </div>
-              <div className="mx-4 w-px self-stretch bg-zinc-200" />
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-                <div className="text-xs text-zinc-500">{tx("语言", "Language")}</div>
-                <LanguageToggle />
-              </div>
-            </div>
-          </div>
 
           <div className="mt-6 px-2 text-xs text-zinc-500">{tx("默认端口 8848，支持局域网登录访问", "Default port 8848, supports LAN access")}</div>
         </aside>

@@ -55,7 +55,7 @@ export default function Compare() {
     <div className="px-6 py-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <Link to="/" className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100">
+          <Link to="/commits" className="inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100">
             <ArrowLeft className="h-4 w-4" />
             {tx("返回", "Back")}
           </Link>
