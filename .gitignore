@@ -29,6 +29,8 @@ dist-ssr
 .venv/
 .venv-build
 .venv-build/
+release
+release/
 __pycache__/
 *.py[cod]
 .pytest_cache/
