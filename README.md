@@ -182,3 +182,11 @@ type out.txt
 $env:PYTHONPATH="$pwd\api"
 .\.venv\Scripts\python -m unittest discover -s api\tests -p "test_*.py" -q
 ```
+
+---
+
+## 7. 赞助 / 众筹
+如果这个工具对你有帮助，欢迎赞助支持后续迭代与维护。
+
+### 7.1 支付宝
+![支付宝赞助](docs/sponsor/alipay.png)

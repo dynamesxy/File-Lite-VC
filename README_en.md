@@ -174,3 +174,9 @@ type out.txt
 $env:PYTHONPATH="$pwd\api"
 .\.venv\Scripts\python -m unittest discover -s api\tests -p "test_*.py" -q
 ```
+
+---
+
+## 7. Sponsor / Crowdfunding
+If this project helps you, consider sponsoring to support maintenance and future improvements.
+- https://ko-fi.com/dynamesxy
