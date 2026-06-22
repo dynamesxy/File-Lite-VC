@@ -1,5 +1,7 @@
 # File-Lite-VC (Lightweight file management tool)
 
+[English](README_en.md) | [中文](README.md)
+
 This tool manages scripts/files in intranet environments:
 - Local version snapshots + visual Diff
 - Sync modes: FTP (pull/push) or Local Directory (pull/push to a target folder)
