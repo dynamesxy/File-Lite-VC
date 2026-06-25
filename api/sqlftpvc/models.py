@@ -16,6 +16,7 @@ class Project(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str
     local_workspace_path: str
+    local_workspace_paths: str = Field(default="[]")
     remote_path: str
     script_extensions: str = Field(default='[".sql"]')
     created_at: str = Field(default_factory=now_iso)

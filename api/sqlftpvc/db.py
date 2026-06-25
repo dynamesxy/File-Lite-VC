@@ -37,6 +37,8 @@ def _ensure_schema() -> None:
             conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_versions_project_id ON versions(project_id)")
         if not _has_column(conn, "projects", "script_extensions"):
             conn.exec_driver_sql("ALTER TABLE projects ADD COLUMN script_extensions TEXT DEFAULT '[\".sql\"]'")
+        if not _has_column(conn, "projects", "local_workspace_paths"):
+            conn.exec_driver_sql("ALTER TABLE projects ADD COLUMN local_workspace_paths TEXT DEFAULT '[]'")
         if not _has_column(conn, "ftp_settings", "connection_mode"):
             conn.exec_driver_sql("ALTER TABLE ftp_settings ADD COLUMN connection_mode TEXT DEFAULT 'ftp'")
         if not _has_column(conn, "ftp_settings", "ftp_encoding"):

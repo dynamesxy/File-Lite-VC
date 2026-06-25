@@ -48,7 +48,8 @@ SESSION_MAX_AGE = 30 * 24 * 60 * 60
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    localWorkspacePath: str
+    localWorkspacePath: str | None = None
+    localWorkspacePaths: list[str] | None = None
     remotePath: str
     scriptExtensions: list[str] | None = None
 
@@ -57,6 +58,7 @@ class ProjectOut(BaseModel):
     id: str
     name: str
     localWorkspacePath: str
+    localWorkspacePaths: list[str]
     remotePath: str
     scriptExtensions: list[str]
     createdAt: str
@@ -65,6 +67,7 @@ class ProjectOut(BaseModel):
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     localWorkspacePath: str | None = None
+    localWorkspacePaths: list[str] | None = None
     remotePath: str | None = None
     scriptExtensions: list[str] | None = None
 
@@ -497,6 +500,141 @@ def _normalize_script_extensions_input(exts: list[str] | None) -> list[str]:
     return out or [".sql"]
 
 
+def _normalize_local_workspace_paths_input(
+    local_workspace_path: str | None,
+    local_workspace_paths: list[str] | None,
+) -> list[str]:
+    raw: list[str] = []
+    if local_workspace_paths and isinstance(local_workspace_paths, list):
+        raw = [x for x in local_workspace_paths if isinstance(x, str)]
+    elif local_workspace_path and isinstance(local_workspace_path, str):
+        raw = [local_workspace_path]
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        p = (item or "").strip()
+        if not p:
+            continue
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    if not out:
+        raise HTTPException(status_code=400, detail="local workspace path required")
+    return out
+
+
+def _project_local_workspace_paths(proj: Project) -> list[str]:
+    raw = getattr(proj, "local_workspace_paths", None)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                out = [str(x).strip() for x in data if isinstance(x, str) and str(x).strip()]
+                if out:
+                    return out
+        except Exception:
+            pass
+    p = (getattr(proj, "local_workspace_path", "") or "").strip()
+    return [p] if p else []
+
+
+def _workspace_root_key(path: str) -> str:
+    p = Path(path)
+    base = p.name or "root"
+    base2 = "".join([c if (c.isalnum() or c in "-_.") else "-" for c in base]).strip("-") or "root"
+    norm = str(path).replace("\\", "/").lower()
+    suf = sha256_hex(norm.encode("utf-8"))[:6]
+    return f"{base2}__{suf}"
+
+
+def _project_workspace_roots(proj: Project) -> list[tuple[str, Path]]:
+    roots: list[tuple[str, Path]] = []
+    for raw in _project_local_workspace_paths(proj):
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            raise HTTPException(status_code=400, detail="local workspace path must be an absolute path")
+        pr = p.resolve()
+        roots.append((_workspace_root_key(str(pr)), pr))
+    if not roots:
+        raise HTTPException(status_code=400, detail="local workspace path required")
+    return roots
+
+
+def _ensure_project_workspaces_exist(proj: Project) -> list[tuple[str, Path]]:
+    roots = _project_workspace_roots(proj)
+    missing = [str(p) for _, p in roots if not p.exists()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"local workspace path does not exist: {missing[0]}")
+    return roots
+
+
+def _resolve_project_workspace_file(proj: Project, rel: str) -> Path:
+    roots = _project_workspace_roots(proj)
+    if len(roots) == 1:
+        return (roots[0][1] / rel).resolve()
+
+    key_to_root = {k: p for k, p in roots}
+    parts = (rel or "").split("/", 1)
+    if len(parts) == 2 and parts[0] in key_to_root:
+        return (key_to_root[parts[0]] / parts[1]).resolve()
+
+    for _, root in roots:
+        p = (root / rel).resolve()
+        if p.exists():
+            return p
+    return (roots[0][1] / rel).resolve()
+
+
+def _read_project_local_bytes(proj: Project, rel: str) -> bytes | None:
+    roots = _project_workspace_roots(proj)
+    if len(roots) == 1:
+        return _read_local_bytes(roots[0][1], rel)
+    parts = (rel or "").split("/", 1)
+    if len(parts) == 2:
+        key = parts[0]
+        rest = parts[1]
+        for k, root in roots:
+            if k == key:
+                return _read_local_bytes(root, rest)
+    for _, root in roots:
+        data = _read_local_bytes(root, rel)
+        if data is not None:
+            return data
+    return None
+
+
+def _write_project_local_bytes(proj: Project, rel: str, data: bytes) -> None:
+    roots = _project_workspace_roots(proj)
+    if len(roots) == 1:
+        _write_local_bytes(roots[0][1], rel, data)
+        return
+    parts = (rel or "").split("/", 1)
+    if len(parts) == 2:
+        key = parts[0]
+        rest = parts[1]
+        for k, root in roots:
+            if k == key:
+                _write_local_bytes(root, rest, data)
+                return
+    _write_local_bytes(roots[0][1], rel, data)
+
+
+def _list_project_workspace_files(proj: Project, exts: list[str]) -> list[tuple[str, Path]]:
+    roots = _ensure_project_workspaces_exist(proj)
+    if len(roots) == 1:
+        base = roots[0][1]
+        return [(row.relative_path, row.absolute_path) for row in list_workspace_files(base, exts)]
+    out: list[tuple[str, Path]] = []
+    for key, base in roots:
+        for row in list_workspace_files(base, exts):
+            out.append((f"{key}/{row.relative_path}", row.absolute_path))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
 def _list_files_in_dir(base_dir: Path, exts: list[str]) -> list[str]:
     if not base_dir.exists():
         return []
@@ -726,8 +864,7 @@ def diff(
             if not proj:
                 raise HTTPException(status_code=404, detail="project not found")
 
-        workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
-        fp = (workspace_dir / s.relative_path).resolve()
+        fp = _resolve_project_workspace_file(proj, s.relative_path)
         if not fp.exists() or not fp.is_file():
             raise HTTPException(status_code=400, detail="file not found in workspace")
         left_text = decode_sql_bytes(fp.read_bytes())
@@ -750,6 +887,7 @@ def list_projects(current_user: CurrentUser):
             id=r.id,
             name=r.name,
             localWorkspacePath=r.local_workspace_path,
+            localWorkspacePaths=_project_local_workspace_paths(r),
             remotePath=r.remote_path,
             scriptExtensions=_project_script_extensions(r),
             createdAt=r.created_at,
@@ -762,10 +900,12 @@ def list_projects(current_user: CurrentUser):
 def create_project(body: ProjectCreate, current_user: CurrentUser):
     pid = str(uuid.uuid4())
     exts = _normalize_script_extensions_input(body.scriptExtensions)
+    local_paths = _normalize_local_workspace_paths_input(body.localWorkspacePath, body.localWorkspacePaths)
     p = Project(
         id=pid,
         name=body.name,
-        local_workspace_path=body.localWorkspacePath,
+        local_workspace_path=local_paths[0],
+        local_workspace_paths=json.dumps(local_paths, ensure_ascii=False),
         remote_path=body.remotePath,
         script_extensions=json.dumps(exts, ensure_ascii=False),
     )
@@ -777,6 +917,7 @@ def create_project(body: ProjectCreate, current_user: CurrentUser):
         id=p.id,
         name=p.name,
         localWorkspacePath=p.local_workspace_path,
+        localWorkspacePaths=_project_local_workspace_paths(p),
         remotePath=p.remote_path,
         scriptExtensions=_project_script_extensions(p),
         createdAt=p.created_at,
@@ -798,8 +939,10 @@ def update_project(project_id: str, body: ProjectUpdate, current_user: CurrentUs
             raise HTTPException(status_code=404, detail="project not found")
         if body.name is not None:
             p.name = body.name
-        if body.localWorkspacePath is not None:
-            p.local_workspace_path = body.localWorkspacePath
+        if body.localWorkspacePath is not None or body.localWorkspacePaths is not None:
+            local_paths = _normalize_local_workspace_paths_input(body.localWorkspacePath, body.localWorkspacePaths)
+            p.local_workspace_path = local_paths[0]
+            p.local_workspace_paths = json.dumps(local_paths, ensure_ascii=False)
         if body.remotePath is not None:
             p.remote_path = body.remotePath
         if body.scriptExtensions is not None:
@@ -811,6 +954,7 @@ def update_project(project_id: str, body: ProjectUpdate, current_user: CurrentUs
         id=p.id,
         name=p.name,
         localWorkspacePath=p.local_workspace_path,
+        localWorkspacePaths=_project_local_workspace_paths(p),
         remotePath=p.remote_path,
         scriptExtensions=_project_script_extensions(p),
         createdAt=p.created_at,
@@ -1127,16 +1271,12 @@ def fs_pick_directory(current_user: CurrentUser, initial: str | None = None):
 @api_router.get("/projects/{project_id}/scripts", response_model=list[ScriptOut])
 def list_project_scripts(project_id: str, current_user: CurrentUser):
     proj = _get_project(project_id)
-    workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=400, detail="local workspace path does not exist")
-
     exts = _project_script_extensions(proj)
-    files = list_workspace_files(workspace_dir, exts)
+    files = _list_project_workspace_files(proj, exts)
     out: list[ScriptOut] = []
-    for f in files:
-        s = upsert_script(project_id, f.relative_path)
-        data = f.absolute_path.read_bytes()
+    for rel, abs_path in files:
+        s = upsert_script(project_id, rel)
+        data = abs_path.read_bytes()
         latest = _get_latest_version(s.id)
         latest_no = latest.version_no if latest else None
         latest_id = latest.id if latest else None
@@ -1189,8 +1329,7 @@ def commit(script_id: str, body: CommitIn, current_user: CurrentUser):
         if not proj:
             raise HTTPException(status_code=404, detail="project not found")
 
-    workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
-    fp = (workspace_dir / s.relative_path).resolve()
+    fp = _resolve_project_workspace_file(proj, s.relative_path)
     if not fp.exists() or not fp.is_file():
         raise HTTPException(status_code=400, detail="file not found in workspace")
 
@@ -1247,14 +1386,11 @@ def rollback_version_to_local(version_id: str, body: RollbackIn, current_user: C
         if not proj:
             raise HTTPException(status_code=404, detail="project not found")
 
-    workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=400, detail="local workspace path does not exist")
-
     data = read_snapshot(target)
-    workspace_path = str((workspace_dir / script.relative_path).resolve())
+    _ensure_project_workspaces_exist(proj)
+    workspace_path = str(_resolve_project_workspace_file(proj, script.relative_path))
     try:
-        _write_local_bytes(workspace_dir, script.relative_path, data)
+        _write_project_local_bytes(proj, script.relative_path, data)
         latest = _get_latest_version(script.id)
         created_version = None
         if not latest or sha256_hex(data) != latest.content_hash:
@@ -1348,10 +1484,7 @@ def pull_from_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
         mode = _normalize_connection_mode(getattr(st, "connection_mode", "ftp"))
         cfg = _setting_to_cfg(session, st) if mode == "ftp" else None
     exts = _project_script_extensions(proj)
-
-    workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=400, detail="local workspace path does not exist")
+    _ensure_project_workspaces_exist(proj)
 
     try:
         if mode == "local":
@@ -1393,7 +1526,7 @@ def pull_from_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
             else:
                 remote_path = remote_join(remote_dir, rel)
                 remote_bytes = download_bytes(ftp, remote_path)
-            local_bytes = _read_local_bytes(workspace_dir, rel)
+            local_bytes = _read_project_local_bytes(proj, rel)
             local_exists = local_bytes is not None
             remote_exists = True
 
@@ -1409,15 +1542,15 @@ def pull_from_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
 
             if not body.dryRun:
                 if status_name == "new":
-                    _write_local_bytes(workspace_dir, rel, remote_bytes)
+                    _write_project_local_bytes(proj, rel, remote_bytes)
                 elif status_name == "modified":
                     selections = (body.conflictSelections or {}).get(rel)
                     if conflict_lines and selections:
                         merged_text = _merge_text_by_choices(local_text, remote_text, selections, "remote")
                         merged_bytes = merged_text.encode(_detect_text_encoding(local_bytes, remote_bytes))
-                        _write_local_bytes(workspace_dir, rel, merged_bytes)
+                        _write_project_local_bytes(proj, rel, merged_bytes)
                     elif body.overwrite:
-                        _write_local_bytes(workspace_dir, rel, remote_bytes)
+                        _write_project_local_bytes(proj, rel, remote_bytes)
 
             results.append(
                 FileStatus(
@@ -1454,15 +1587,7 @@ def push_to_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
         mode = _normalize_connection_mode(getattr(st, "connection_mode", "ftp"))
         cfg = _setting_to_cfg(session, st) if mode == "ftp" else None
     exts = _project_script_extensions(proj)
-
-    workspace_dir = Path(proj.local_workspace_path).expanduser().resolve()
-    if not workspace_dir.exists():
-        raise HTTPException(status_code=400, detail="local workspace path does not exist")
-
-    local_files: list[str] = []
-    for row in list_workspace_files(workspace_dir, exts):
-        local_files.append(row.relative_path)
-    local_files.sort()
+    local_files = [rel for rel, _ in _list_project_workspace_files(proj, exts)]
 
     try:
         if mode == "local":
@@ -1485,7 +1610,7 @@ def push_to_ftp(project_id: str, body: PullPushIn, current_user: CurrentUser):
             if body.paths and rel not in body.paths:
                 continue
 
-            local_bytes = _read_local_bytes(workspace_dir, rel)
+            local_bytes = _read_project_local_bytes(proj, rel)
             if local_bytes is None:
                 continue
 

@@ -2,6 +2,7 @@ export type Project = {
   id: string;
   name: string;
   localWorkspacePath: string;
+  localWorkspacePaths: string[];
   remotePath: string;
   scriptExtensions: string[];
   createdAt: string;
@@ -164,11 +165,11 @@ export const api = {
   logout: () => apiFetch<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
 
   listProjects: () => apiFetch<Project[]>("/api/projects"),
-  createProject: (body: { name: string; localWorkspacePath: string; remotePath: string; scriptExtensions?: string[] }) =>
+  createProject: (body: { name: string; localWorkspacePath?: string; localWorkspacePaths?: string[]; remotePath: string; scriptExtensions?: string[] }) =>
     apiFetch<Project>("/api/projects", { method: "POST", body: JSON.stringify(body) }),
   updateProject: (
     projectId: string,
-    body: Partial<{ name: string; localWorkspacePath: string; remotePath: string; scriptExtensions: string[] }>
+    body: Partial<{ name: string; localWorkspacePath: string; localWorkspacePaths: string[]; remotePath: string; scriptExtensions: string[] }>
   ) => apiFetch<Project>(`/api/projects/${projectId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteProject: (projectId: string) => apiFetch<{ ok: boolean }>(`/api/projects/${projectId}`, { method: "DELETE" }),
   batchDeleteProjects: (projectIds: string[]) =>

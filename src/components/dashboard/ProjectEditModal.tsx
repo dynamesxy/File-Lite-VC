@@ -14,12 +14,12 @@ export function ProjectEditModal(props: {
   busy: boolean;
   project: Project | null;
   name: string;
-  localPath: string;
+  localPaths: string[];
   remotePath: string;
   scriptExtensions: string[];
   onClose: () => void;
   onSave: () => Promise<void>;
-  onChange: (patch: { name?: string; localPath?: string; remotePath?: string; scriptExtensions?: string[] }) => void;
+  onChange: (patch: { name?: string; localPaths?: string[]; remotePath?: string; scriptExtensions?: string[] }) => void;
 }) {
   const { tx } = useI18n();
   const [pickBusy, setPickBusy] = useState(false);
@@ -28,7 +28,7 @@ export function ProjectEditModal(props: {
   const [ftpPickOpen, setFtpPickOpen] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [customExt, setCustomExt] = useState("");
-  const builtinExts = [".sql", ".java", ".vue", ".js"];
+  const builtinExts = [".sql", ".java", ".vue", ".js", ".py", ".xml", ".txt"];
   const selectedExtSet = useMemo(() => new Set(props.scriptExtensions.map((x) => x.toLowerCase())), [props.scriptExtensions]);
 
   function normalizeExt(value: string) {
@@ -87,8 +87,9 @@ export function ProjectEditModal(props: {
     setPickBusy(true);
     setFtpErr(null);
     try {
-      const r = await api.pickDirectory(props.localPath || undefined);
-      props.onChange({ localPath: r.path });
+      const initial = props.localPaths.length > 0 ? props.localPaths[props.localPaths.length - 1] : undefined;
+      const r = await api.pickDirectory(initial);
+      props.onChange({ localPaths: [...props.localPaths, r.path] });
     } catch (e) {
       setFtpErr(e instanceof Error ? e.message : tx("选择文件夹失败", "Failed to choose folder"));
     } finally {
@@ -144,7 +145,7 @@ export function ProjectEditModal(props: {
           </Button>
           <Button
             onClick={handleSave}
-            disabled={props.busy || !props.name.trim() || !props.localPath.trim() || !props.remotePath.trim() || props.scriptExtensions.length === 0}
+            disabled={props.busy || !props.name.trim() || props.localPaths.map((x) => x.trim()).filter(Boolean).length === 0 || !props.remotePath.trim() || props.scriptExtensions.length === 0}
           >
             {tx("保存", "Save")}
           </Button>
@@ -157,13 +158,39 @@ export function ProjectEditModal(props: {
           <Input value={props.name} onChange={(e) => props.onChange({ name: e.target.value })} placeholder={tx("例如：结算脚本", "Example: settlement scripts")} />
         </div>
         <div>
-          <div className="text-xs text-zinc-600">{tx("本地工作区路径", "Local Workspace Path")}</div>
-          <div className="flex items-center gap-2">
-            <div className="flex-1">
-              <Input value={props.localPath} onChange={(e) => props.onChange({ localPath: e.target.value })} placeholder={tx("例如：D:\\work\\sql", "Example: D:\\work\\sql")} />
-            </div>
+          <div className="text-xs text-zinc-600">{tx("本地工作区路径（可多选）", "Local Workspace Paths (Multiple)")}</div>
+          <div className="mt-2 space-y-2">
+            {props.localPaths.length === 0 ? (
+              <div className="text-sm text-zinc-500">{tx("请添加至少一个本地目录", "Please add at least one local folder")}</div>
+            ) : (
+              props.localPaths.map((p, idx) => (
+                <div key={`${idx}-${p}`} className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <Input
+                      value={p}
+                      onChange={(e) => {
+                        const next = [...props.localPaths];
+                        next[idx] = e.target.value;
+                        props.onChange({ localPaths: next });
+                      }}
+                      placeholder={tx("例如：D:\\work\\sql", "Example: D:\\work\\sql")}
+                    />
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      const next = props.localPaths.filter((_, i) => i !== idx);
+                      props.onChange({ localPaths: next });
+                    }}
+                    disabled={props.busy || pickBusy}
+                  >
+                    {tx("移除", "Remove")}
+                  </Button>
+                </div>
+              ))
+            )}
             <Button variant="secondary" onClick={pickLocalDir} disabled={props.busy || pickBusy}>
-              {pickBusy ? tx("选择中...", "Choosing...") : tx("选择文件夹", "Choose Folder")}
+              {pickBusy ? tx("选择中...", "Choosing...") : tx("添加文件夹", "Add Folder")}
             </Button>
           </div>
         </div>

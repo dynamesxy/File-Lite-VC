@@ -20,11 +20,11 @@ export default function ProjectsPage() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [pName, setPName] = useState("");
-  const [pLocal, setPLocal] = useState("");
+  const [pLocals, setPLocals] = useState<string[]>([]);
   const [pRemote, setPRemote] = useState("");
   const [pConnMode, setPConnMode] = useState<"ftp" | "local">("local");
   const [pFtpProfileId, setPFtpProfileId] = useState<string | null>(null);
-  const [pExts, setPExts] = useState<string[]>([".sql"]);
+  const [pExts, setPExts] = useState<string[]>([".sql", ".py", ".xml", ".txt"]);
   const [createBusy, setCreateBusy] = useState(false);
   const createLockRef = useRef(false);
 
@@ -32,9 +32,9 @@ export default function ProjectsPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [editProject, setEditProject] = useState<Project | null>(null);
   const [editName, setEditName] = useState("");
-  const [editLocal, setEditLocal] = useState("");
+  const [editLocals, setEditLocals] = useState<string[]>([]);
   const [editRemote, setEditRemote] = useState("");
-  const [editExts, setEditExts] = useState<string[]>([".sql"]);
+  const [editExts, setEditExts] = useState<string[]>([".sql", ".py", ".xml", ".txt"]);
   const [editBusy, setEditBusy] = useState(false);
   const editLockRef = useRef(false);
 
@@ -89,7 +89,7 @@ export default function ProjectsPage() {
       setError(null);
       const created = await api.createProject({
         name: pName.trim(),
-        localWorkspacePath: pLocal.trim(),
+        localWorkspacePaths: pLocals.map((x) => x.trim()).filter(Boolean),
         remotePath: pConnMode === "ftp" ? pRemote.trim() : pRemote.trim(),
         scriptExtensions: pExts,
       });
@@ -123,11 +123,11 @@ export default function ProjectsPage() {
       }
       setCreateOpen(false);
       setPName("");
-      setPLocal("");
+      setPLocals([]);
       setPRemote("");
       setPConnMode("local");
       setPFtpProfileId(null);
-      setPExts([".sql"]);
+      setPExts([".sql", ".py", ".xml", ".txt"]);
       await refreshProjects();
       setActiveProjectId(created.id);
       notifySuccess(tx("项目已创建", "Project created"));
@@ -191,7 +191,7 @@ export default function ProjectsPage() {
     if (!p) return;
     setEditProject(p);
     setEditName(p.name);
-    setEditLocal(p.localWorkspacePath);
+    setEditLocals(p.localWorkspacePaths && p.localWorkspacePaths.length > 0 ? p.localWorkspacePaths : [p.localWorkspacePath]);
     setEditRemote(p.remotePath);
     setEditExts(p.scriptExtensions && p.scriptExtensions.length > 0 ? p.scriptExtensions : [".sql"]);
     setEditOpen(true);
@@ -209,7 +209,7 @@ export default function ProjectsPage() {
       setError(null);
       await api.updateProject(editProject.id, {
         name: editName.trim(),
-        localWorkspacePath: editLocal.trim(),
+        localWorkspacePaths: editLocals.map((x) => x.trim()).filter(Boolean),
         remotePath: editRemote.trim(),
         scriptExtensions: editExts,
       });
@@ -297,7 +297,7 @@ export default function ProjectsPage() {
         open={createOpen}
         busy={createBusy}
         name={pName}
-        localPath={pLocal}
+        localPaths={pLocals}
         remotePath={pRemote}
         connectionMode={pConnMode}
         ftpProfileId={pFtpProfileId}
@@ -306,7 +306,7 @@ export default function ProjectsPage() {
         onCreate={createProject}
         onChange={(patch) => {
           if (patch.name !== undefined) setPName(patch.name);
-          if (patch.localPath !== undefined) setPLocal(patch.localPath);
+          if (patch.localPaths !== undefined) setPLocals(patch.localPaths);
           if (patch.remotePath !== undefined) setPRemote(patch.remotePath);
           if (patch.connectionMode !== undefined) setPConnMode(patch.connectionMode);
           if (patch.ftpProfileId !== undefined) setPFtpProfileId(patch.ftpProfileId);
@@ -319,7 +319,7 @@ export default function ProjectsPage() {
         busy={editBusy}
         project={editProject}
         name={editName}
-        localPath={editLocal}
+        localPaths={editLocals}
         remotePath={editRemote}
         scriptExtensions={editExts}
         onClose={() => {
@@ -328,7 +328,7 @@ export default function ProjectsPage() {
         onSave={saveEditProject}
         onChange={(patch) => {
           if (patch.name !== undefined) setEditName(patch.name);
-          if (patch.localPath !== undefined) setEditLocal(patch.localPath);
+          if (patch.localPaths !== undefined) setEditLocals(patch.localPaths);
           if (patch.remotePath !== undefined) setEditRemote(patch.remotePath);
           if (patch.scriptExtensions !== undefined) setEditExts(patch.scriptExtensions);
         }}
